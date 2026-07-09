@@ -1,4 +1,4 @@
-# 自用管理页
+# anyvps-cdn
 
 Personal VPS preferred-IP and subscription management panel.
 
@@ -9,7 +9,7 @@ apt update
 apt install -y git docker.io docker-compose-plugin
 systemctl enable --now docker
 
-git clone https://github.com/zane0314/zi-yong-guan-li-ye.git /root/data/docker_data/anyvps
+git clone https://github.com/zane0314/anyvps-cdn.git /root/data/docker_data/anyvps
 cd /root/data/docker_data/anyvps
 
 cp .env.example .env
