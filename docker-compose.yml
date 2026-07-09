@@ -1,0 +1,12 @@
+services:
+  anyvps:
+    build: .
+    container_name: anyvps
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8090"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    mem_limit: 512m
