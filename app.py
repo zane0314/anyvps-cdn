@@ -1175,6 +1175,17 @@ def add_refresh_param(url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 
+def add_no_cache_param(url: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    query["noCache"] = ["true"]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def substore_verify_url(row: sqlite3.Row | dict, requested: str = "") -> str:
+    return clean_text(requested) or row["substore_base64_url"] or row["substore_cdn_base64_url"] or row["substore_combo_base64_url"] or row["substore_xui_base64_url"]
+
+
 def verify_subscription(url: str) -> dict:
     status, ctype, body = read_url(add_refresh_param(url))
     text = body[:500_000].decode("utf-8", "ignore")
@@ -1380,7 +1391,7 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
         # 1. 尝试删除现有订阅（URL 编码名称）
         encoded_name = quote(item_name, safe='')
         delete_req = urlrequest.Request(
-            f"{SUBSTORE_API}/api/subs/{encoded_name}",
+            f"{SUBSTORE_API}/api/sub/{encoded_name}",
             headers={"Authorization": f"Bearer {SUBSTORE_TOKEN}"},
             method="DELETE",
         )
@@ -1422,11 +1433,15 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
 
         # 2. 生成各格式的转换链接
         urls = {
-            "base64": f"{SUBSTORE_BASE_URL}/download/{item_name}",
-            "mihomo": f"{SUBSTORE_BASE_URL}/download/{item_name}?target=Clash",
-            "surge": f"{SUBSTORE_BASE_URL}/download/{item_name}?target=Surge&ver=4",
-            "singbox": f"{SUBSTORE_BASE_URL}/download/{item_name}?target=SingBox"
+            "base64": f"{SUBSTORE_BASE_URL}/download/{encoded_name}",
+            "mihomo": f"{SUBSTORE_BASE_URL}/download/{encoded_name}?target=Clash",
+            "surge": f"{SUBSTORE_BASE_URL}/download/{encoded_name}?target=Surge&ver=4",
+            "singbox": f"{SUBSTORE_BASE_URL}/download/{encoded_name}?target=SingBox"
         }
+
+        verification = verify_subscription(add_no_cache_param(urls["base64"]))
+        if not verification["valid"]:
+            return {"ok": False, "error": "SubStore 已创建，但实时刷新验证失败"}
 
         # 3. 更新数据库（根据订阅类型更新对应字段）
         with get_conn() as conn:
@@ -1501,7 +1516,8 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
         return {
             "ok": True,
             "item_name": item_name,
-            "urls": urls
+            "urls": urls,
+            "verification": verification,
         }
 
     except Exception as e:
@@ -2070,11 +2086,11 @@ class Handler(BaseHTTPRequestHandler):
             row = conn.execute("select * from vps where id=?", (vps_id,)).fetchone()
             if row is None:
                 return self.send_json({"ok": False, "error": "vps_not_found"})
-            url = clean_text(data.get("url")) or row["substore_download_url"] or row["combo_sub_url"] or row["cdn_sub_url"]
+            url = substore_verify_url(row, data.get("url", ""))
         if not url:
             return self.send_json({"ok": False, "error": "download_url_empty"})
         try:
-            info = verify_subscription(url)
+            info = verify_subscription(add_no_cache_param(url))
             status = "done" if info["valid"] else "failed"
             message = f"Sub-Store 导出验证：HTTP {info['status']}，{info['bytes']} bytes，{info['lines']} 行"
             with get_conn() as conn:
