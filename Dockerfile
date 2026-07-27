@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY *.py /app/
+COPY scripts/ /app/scripts/
 
 RUN useradd -r -u 10001 -g root anyvps && \
     mkdir -p /data && \
