@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AnyVPS 登录</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="login-body">
+<form class="login-card" method="post" action="/api/login">
+  <div class="login-brand">
+    <div class="logo">AV</div>
+    <div>
+      <h1>AnyVPS</h1>
+      <p>仅限本人访问</p>
+    </div>
+  </div>
+  <div class="login-alert" id="errBox">用户名或密码不正确</div>
+  <div class="login-alert" id="lockBox">失败次数过多，请稍后再试</div>
+  <label class="login-label" for="username">用户名</label>
+  <input class="input" id="username" name="username" autocomplete="username" required autofocus>
+  <label class="login-label" for="password">密码</label>
+  <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+  <button class="btn primary login-submit" type="submit" id="loginBtn">登录</button>
+</form>
+<script>
+if (!location.search.includes("error=1")) document.getElementById("errBox").remove();
+if (!location.search.includes("locked=1")) document.getElementById("lockBox").remove();
+document.querySelector(".login-card").addEventListener("submit", function () {
+  var btn = document.getElementById("loginBtn");
+  btn.disabled = true;
+  btn.textContent = "登录中…";
+});
+</script>
+</body>
+</html>

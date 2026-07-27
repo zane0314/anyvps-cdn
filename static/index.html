@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AnyVPS 控制台</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="icon-btn mobile-menu" id="menuBtn" title="展开 / 收起 VPS 列表" aria-label="菜单">☰</button>
+  <div class="brand"><div class="logo">AV</div><strong>AnyVPS</strong></div>
+  <nav class="crumb"><span class="crumb-root">VPS 控制台</span><span class="crumb-sep">/</span><span class="crumb-current" id="crumbCurrent">…</span></nav>
+  <div class="topbar-right">
+    <span class="username" id="userName">…</span>
+    <button class="btn ghost" id="logoutBtn">退出</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-head">
+      <span class="lbl" id="vpsCount">VPS</span>
+      <input class="input search" id="vpsSearch" placeholder="搜索 VPS">
+    </div>
+    <div class="vps-list" id="vpsList"></div>
+    <div class="side-foot">
+      <button class="side-btn" id="newVpsBtn">＋ 添加 VPS</button>
+      <button class="side-btn" id="remoteCodeBtn">⌘ 远端采集 / 安装</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="stats">
+      <div class="stat-card"><div class="k">IP 总数</div><div class="v" id="ipTotal">-</div></div>
+      <div class="stat-card"><div class="k">可用 IP</div><div class="v ok-text" id="ipOk">-</div></div>
+      <div class="stat-card"><div class="k">异常 IP</div><div class="v bad-text" id="ipBad">-</div></div>
+      <div class="stat-card"><div class="k">上次同步</div><div class="v small" id="lastSync">-</div></div>
+    </div>
+
+    <section class="card">
+      <div class="card-head"><h2>VPS 信息编辑</h2><button class="btn primary" id="saveInfoBtn">保存信息</button></div>
+      <div class="form-grid">
+        <label>名称<input class="input" id="editName"></label>
+        <label>角色<input class="input" id="editRole" placeholder="例如: 3x-ui · CDN"></label>
+        <label>到期时间<input class="input" id="editExpires" placeholder="YYYY-MM-DD"></label>
+        <label>续费金额<input class="input" id="editRenewal"></label>
+        <label>币种<select class="input" id="editCurrency"><option value="USD">$ USD</option><option value="CNY">¥ RMB</option></select></label>
+        <label>续费周期<select class="input" id="editRenewalPeriod"><option value="monthly">月付</option><option value="yearly">年付</option></select></label>
+        <label>带宽<input class="input" id="editBandwidth" placeholder="例如: 100Mbps"></label>
+        <label>月流量<input class="input" id="editTraffic"></label>
+        <label>状态<select class="input" id="editStatus"><option>已同步</option><option>已回传</option><option>待刷新</option><option>异常</option></select></label>
+        <label>优选管理页<input class="input" id="editAdmin"></label>
+        <label>健康检查<input class="input" id="editHealth"></label>
+        <label>Webhook URL<input class="input" id="editWebhookUrl" placeholder="http://VPS_IP:18964/webhook"></label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>通用订阅地址</h2><div class="tags" id="roleTags"></div></div>
+      <div class="url-row"><span class="url-label">3x-ui</span><input class="input mono" id="xuiUrl" placeholder="未安装"><button class="btn mini" id="uploadXui">↑ 上传</button><button class="btn mini ghost" data-copy="xuiUrl">复制</button></div>
+      <div class="url-row"><span class="url-label">八合一</span><input class="input mono" id="comboUrl" placeholder="未安装"><button class="btn mini" id="uploadCombo">↑ 上传</button><button class="btn mini ghost" data-copy="comboUrl">复制</button></div>
+      <div class="url-row"><span class="url-label">CDN</span><input class="input mono" id="cdnUrl" placeholder="未安装"><button class="btn mini" id="uploadCdn">↑ 上传</button><button class="btn mini ghost" data-copy="cdnUrl">复制</button></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>SubStore 转换订阅</h2><button class="btn mini" id="substoreVerifyBtn">验证 Sub-Store</button></div>
+      <div class="url-row"><span class="url-label">3x-ui</span><input class="input mono" id="substoreXuiUrl" placeholder="请先上传原始订阅" readonly><select class="input format-select" id="substoreXuiFormat"><option value="base64">通用 (Base64)</option><option value="mihomo">Mihomo</option><option value="surge">Surge</option><option value="singbox">Sing-box</option></select><button class="btn mini ghost" data-copy="substoreXuiUrl">复制</button></div>
+      <div class="url-row"><span class="url-label">八合一</span><input class="input mono" id="substoreComboUrl" placeholder="请先上传原始订阅" readonly><select class="input format-select" id="substoreComboFormat"><option value="base64">通用 (Base64)</option><option value="mihomo">Mihomo</option><option value="surge">Surge</option><option value="singbox">Sing-box</option></select><button class="btn mini ghost" data-copy="substoreComboUrl">复制</button></div>
+      <div class="url-row"><span class="url-label">CDN</span><input class="input mono" id="substoreCdnUrl" placeholder="请先上传原始订阅" readonly><select class="input format-select" id="substoreCdnFormat"><option value="base64">通用 (Base64)</option><option value="mihomo">Mihomo</option><option value="surge">Surge</option><option value="singbox">Sing-box</option></select><button class="btn mini ghost" data-copy="substoreCdnUrl">复制</button></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>优选 IP 源</h2></div>
+      <textarea class="input editor mono" id="sources" spellcheck="false" placeholder="每行一个优选 IP 源地址"></textarea>
+      <div class="toolbar">
+        <button class="btn" id="validateBtn">解析并检测 IP</button>
+        <button class="btn" id="dedupeBtn">去重</button>
+        <button class="btn" id="substoreBtn">验证 Sub-Store</button>
+        <button class="btn" id="remoteCodeBtn2">远端采集代码</button>
+        <span class="toolbar-spacer"></span>
+        <div class="sync-anchor">
+          <button class="btn" id="syncDropBtn">一键同步 ▾</button>
+          <div class="sync-drop" id="syncDrop" hidden>
+            <div class="sync-drop-title">同步到目标 VPS</div>
+            <div class="sync-targets" id="syncTargets"></div>
+            <div class="sync-drop-foot">
+              <button class="btn mini ghost" id="syncSelectAll">全选</button>
+              <button class="btn mini primary" id="syncConfirmBtn">确认同步</button>
+            </div>
+          </div>
+        </div>
+        <button class="btn primary" id="saveBtn">保存配置</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>源内 IP 明细检测</h2>
+        <div class="filters" id="checkFilters">
+          <button class="filter active" data-filter="all">全部</button>
+          <button class="filter" data-filter="ok">可用</button>
+          <button class="filter" data-filter="fast">低延迟</button>
+          <button class="filter" data-filter="bad">异常</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>IP:端口</th><th>来源</th><th>地区</th><th>延迟</th><th>状态</th><th>最后检测</th></tr></thead>
+          <tbody id="checkRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <aside class="rail">
+    <section class="rail-card">
+      <h3>同步链路</h3>
+      <div class="steps" id="syncSteps"></div>
+    </section>
+    <section class="rail-card grow">
+      <h3>任务日志</h3>
+      <div class="log" id="taskLog"></div>
+    </section>
+  </aside>
+</div>
+
+<div class="modal" id="remoteCodeModal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <div>
+        <h2 id="remoteToolTitle">远端采集</h2>
+        <div class="modal-note" id="remoteToolNote">复制下面代码到新 VPS 执行，输出 JSON 后可粘贴到下方导入。</div>
+      </div>
+      <button class="icon-btn" id="closeRemoteCode" title="关闭">×</button>
+    </div>
+    <div class="tabs" role="tablist" aria-label="远端工具">
+      <button class="tab active" type="button" data-remote-tool="collector">远端采集</button>
+      <button class="tab" type="button" data-remote-tool="installer">3x-ui-zane 安装</button>
+    </div>
+    <section id="remoteCollectorPanel">
+      <textarea class="input code-area mono" id="remoteCode" spellcheck="false" readonly></textarea>
+      <div class="modal-actions"><button class="btn primary" id="copyRemoteCode">复制代码</button></div>
+      <textarea class="input result-area mono" id="remoteResult" spellcheck="false" placeholder="把新 VPS 执行后输出的 JSON 粘贴到这里"></textarea>
+      <div class="modal-actions">
+        <button class="btn" id="applyRemoteResult">填入当前 VPS 表单</button>
+        <button class="btn" id="importRemoteResult">导入为 VPS 记录</button>
+      </div>
+      <div class="modal-note">采集脚本会避开常见 password/token/key 字段；但粘贴结果前仍建议扫一眼，别把长期密钥带回管理页。</div>
+    </section>
+    <section id="remoteInstallerPanel" hidden>
+      <textarea class="input code-area mono" id="installerCode" spellcheck="false" readonly>curl -fsSL https://789.240314.xyz/install.sh | bash</textarea>
+      <div class="modal-actions"><button class="btn primary" id="copyInstallerCode">复制安装命令</button></div>
+      <div class="modal-note">使用 root 用户在 Linux amd64 VPS 执行。脚本会检查系统和架构、补齐依赖、备份现有 3x-ui，并校验安装包。</div>
+    </section>
+  </div>
+</div>
+
+<div class="ctx" id="vpsContext" hidden>
+  <button id="ctxEdit">编辑信息</button>
+  <button class="danger" id="ctxDelete">删除 VPS</button>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
