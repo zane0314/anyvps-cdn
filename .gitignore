@@ -7,3 +7,4 @@ skill-build/
 skills/
 anyvps-session-export.tar.gz
 .DS_Store
+deploy_to_la.sh

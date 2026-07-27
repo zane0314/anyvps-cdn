@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ANYVPS_PORT=8090
 
 WORKDIR /app
-COPY app.py /app/app.py
+COPY *.py /app/
 
 RUN useradd -r -u 10001 -g root anyvps && \
     mkdir -p /data && \
