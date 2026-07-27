@@ -25,10 +25,9 @@ DATA_DIR = Path(os.environ.get("ANYVPS_DATA_DIR", "/data"))
 DB_PATH = DATA_DIR / "anyvps.db"
 HOST = os.environ.get("ANYVPS_HOST", "0.0.0.0")
 PORT = int(os.environ.get("ANYVPS_PORT", "8090"))
-USERNAME = os.environ.get("ANYVPS_USERNAME", "admin")
+USERNAME = os.environ.get("ANYVPS_USERNAME", "zane240314")
 PASSWORD = os.environ.get("ANYVPS_PASSWORD", "")
 SESSION_SECRET = os.environ.get("ANYVPS_SESSION_SECRET", "")
-PUBLIC_URL = os.environ.get("ANYVPS_PUBLIC_URL", "").rstrip("/")
 LOGIN_FAILURES: dict[str, list[int]] = {}
 LOGIN_WINDOW_SECONDS = 600
 LOGIN_MAX_FAILURES = 5
@@ -45,13 +44,13 @@ X-Robots-Tag: noindex, nofollow, noarchive
 """
 
 
-REMOTE_COLLECTOR_SCRIPT = r"""curl -fsSL __ANYVPS_PUBLIC_URL__/install.sh | bash"""
+REMOTE_COLLECTOR_SCRIPT = r"""curl -fsSL https://anyvps.240314.xyz/install.sh | bash"""
 
 INSTALL_SCRIPT = r"""#!/bin/bash
 # AnyVPS 一键部署脚本
 set -e
 
-MANAGER_URL="${MANAGER_URL:-__ANYVPS_PUBLIC_URL__}"
+MANAGER_URL="${MANAGER_URL:-https://anyvps.240314.xyz}"
 AGENT_PATH="/usr/local/bin/anyvps-agent"
 SERVICE_PATH="/etc/systemd/system/anyvps-agent.service"
 ANYVPS_SOURCE_FILE="${ANYVPS_SOURCE_FILE:-}"
@@ -204,6 +203,131 @@ def service_hint():
     return " · ".join(names)
 
 
+def detect_admin_url():
+    # 从订阅服务配置构造优选管理页地址：
+    # 扫描 /etc/*/state.json 取 admin_host，同目录 admin.env 取 *_ADMIN_PATH，
+    # 拼成 https://{admin_host}/{admin_path}。适配不同 VPS 的不同服务名。
+    import glob
+    for state_path in sorted(glob.glob("/etc/*/state.json")):
+        try:
+            state = json.loads(read(state_path))
+        except Exception:
+            continue
+        admin_host = str(state.get("admin_host", "")).strip()
+        if not admin_host:
+            continue
+        admin_env = os.path.join(os.path.dirname(state_path), "admin.env")
+        admin_path = ""
+        for line in read(admin_env).splitlines():
+            m = re.match(r'\s*[A-Z0-9_]*ADMIN_PATH\s*=\s*(.+)', line)
+            if m:
+                admin_path = m.group(1).strip().strip('"').strip("'")
+                break
+        if admin_path:
+            return f"https://{admin_host}/{admin_path.lstrip('/')}"
+        return f"https://{admin_host}"
+    env_paths = sorted(set(
+        glob.glob("/etc/*admin.env") + glob.glob("/etc/*/admin.env") +
+        glob.glob("/etc/*.env") + glob.glob("/etc/*/*.env")
+    ))
+    for env_path in env_paths:
+        public_sub_url = ""
+        admin_path = ""
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*PUBLIC_SUB_URL\s*=\s*(.+)', line)
+            if m:
+                public_sub_url = m.group(1).strip().strip('"').strip("'")
+            m = re.match(r'\s*[A-Z0-9_]*ADMIN_PATH\s*=\s*(.+)', line)
+            if m:
+                admin_path = m.group(1).strip().strip('"').strip("'")
+        if public_sub_url.startswith("http") and admin_path:
+            from urllib.parse import urlsplit
+            parts = urlsplit(public_sub_url)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}/{admin_path.lstrip('/')}"
+    return ""
+
+def detect_cdn_sub_url():
+    # 从订阅服务配置获取 CDN 订阅地址（权威来源，含 ?refresh=1 等查询参数）：
+    #   1. 扫 env 文件里的 PUBLIC_SUB_URL=（cf-dynamic-sub 结构，值即完整地址）
+    #   2. 从 state.json 用 cdn_host + sub_path 拼接，并补 ?refresh=1（jp-cdn-sub 结构）
+    # 都取不到返回空，由调用方回退到 grep 匹配
+    import glob
+    env_paths = sorted(set(
+        glob.glob("/etc/*admin.env") + glob.glob("/etc/*/admin.env") +
+        glob.glob("/etc/*.env") + glob.glob("/etc/*/*.env")
+    ))
+    for env_path in env_paths:
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*PUBLIC_SUB_URL\s*=\s*(.+)', line)
+            if m:
+                url = m.group(1).strip().strip('"').strip("'")
+                if url.startswith("http"):
+                    return url
+    for state_path in sorted(glob.glob("/etc/*/state.json")):
+        try:
+            state = json.loads(read(state_path))
+        except Exception:
+            continue
+        cdn_host = str(state.get("cdn_host", "")).strip()
+        sub_path = str(state.get("sub_path", "")).strip()
+        if cdn_host and sub_path:
+            url = f"https://{cdn_host}/{sub_path.lstrip('/')}"
+            if "refresh=" not in url:
+                url += "?refresh=1"
+            return url
+    return ""
+
+def detect_preferred_sources():
+    # 读取订阅服务实际使用的优选源文件（CDN 正在用的源），权威回填。
+    #   1. 从 systemd 服务配置读 SUB_SOURCE_FILE / ANYVPS_SOURCE_FILE 指定的路径
+    #   2. 回退扫描 /var/lib/*/sources.json
+    # 文件内容支持 JSON 数组或每行一个 URL；取不到返回空，由调用方回退到 grep。
+    import glob
+    env_paths = sorted(set(
+        glob.glob("/etc/*admin.env") + glob.glob("/etc/*/admin.env") +
+        glob.glob("/etc/*.env") + glob.glob("/etc/*/*.env")
+    ))
+    for env_path in env_paths:
+        lines = []
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*(?:SOURCES|PREFERRED_SOURCES|PREFERRED_SOURCE_URLS|SOURCE_URLS)\s*=\s*(.+)', line)
+            if not m:
+                continue
+            value = m.group(1).strip().strip('"').strip("'")
+            for item in re.split(r'[\s,]+', value):
+                item = item.strip().strip('"').strip("'")
+                if item.startswith(("http://", "https://")):
+                    lines.append(item)
+        if lines:
+            return "\n".join(lines[:100])
+    candidates = []
+    for svc_path in sorted(glob.glob("/etc/systemd/system/*.service")):
+        for line in read(svc_path).splitlines():
+            m = re.search(r'(?:SUB_SOURCE_FILE|ANYVPS_SOURCE_FILE)\s*=\s*(\S+)', line)
+            if m:
+                candidates.append(m.group(1).strip().strip('"').strip("'"))
+    candidates += sorted(glob.glob("/var/lib/*/sources.json"))
+    seen = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        raw = read(path).strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                lines = [str(x).strip() for x in data if str(x).strip()]
+            else:
+                lines = [str(data).strip()]
+        except Exception:
+            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if lines:
+            return "\n".join(lines[:20])
+    return ""
+
 urls = collect_urls()
 host = socket.gethostname()
 result = {
@@ -211,12 +335,12 @@ result = {
     "host_hint": public_ip(),
     "role": service_hint(),
     "status": "待刷新",
-    "admin_url": first_url(urls, "admindav") or first_url(urls, "youxuan"),
+    "admin_url": detect_admin_url() or first_url(urls, "admindav") or first_url(urls, "youxuan"),
     "health_url": first_url(urls, "health"),
     "xui_sub_url": pick_subscription(urls, "xui"),
     "combo_sub_url": pick_subscription(urls, "combo"),
-    "cdn_sub_url": pick_subscription(urls, "cdn"),
-    "preferred_sources": "\n".join([u for u in urls if ("bestcf" in u.lower() or "youxuan" in u.lower() or u.endswith(".txt"))][:20]),
+    "cdn_sub_url": detect_cdn_sub_url() or pick_subscription(urls, "cdn"),
+    "preferred_sources": detect_preferred_sources() or "\n".join([u for u in urls if ("bestcf" in u.lower() or "youxuan" in u.lower())][:20]),
     "detected_urls": urls[:80],
 }
 print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -376,6 +500,131 @@ def detect_verify_url(urls):
         return configured
     return pick_subscription(urls, "cdn") or pick_subscription(urls, "combo") or pick_subscription(urls, "xui")
 
+def detect_admin_url():
+    # 从订阅服务配置构造优选管理页地址：
+    # 扫描 /etc/*/state.json 取 admin_host，同目录 admin.env 取 *_ADMIN_PATH，
+    # 拼成 https://{admin_host}/{admin_path}。适配不同 VPS 的不同服务名。
+    import glob
+    for state_path in sorted(glob.glob("/etc/*/state.json")):
+        try:
+            state = json.loads(read(state_path))
+        except Exception:
+            continue
+        admin_host = str(state.get("admin_host", "")).strip()
+        if not admin_host:
+            continue
+        admin_env = os.path.join(os.path.dirname(state_path), "admin.env")
+        admin_path = ""
+        for line in read(admin_env).splitlines():
+            m = re.match(r'\s*[A-Z0-9_]*ADMIN_PATH\s*=\s*(.+)', line)
+            if m:
+                admin_path = m.group(1).strip().strip('"').strip("'")
+                break
+        if admin_path:
+            return f"https://{admin_host}/{admin_path.lstrip('/')}"
+        return f"https://{admin_host}"
+    env_paths = sorted(set(
+        glob.glob("/etc/*admin.env") + glob.glob("/etc/*/admin.env") +
+        glob.glob("/etc/*.env") + glob.glob("/etc/*/*.env")
+    ))
+    for env_path in env_paths:
+        public_sub_url = ""
+        admin_path = ""
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*PUBLIC_SUB_URL\s*=\s*(.+)', line)
+            if m:
+                public_sub_url = m.group(1).strip().strip('"').strip("'")
+            m = re.match(r'\s*[A-Z0-9_]*ADMIN_PATH\s*=\s*(.+)', line)
+            if m:
+                admin_path = m.group(1).strip().strip('"').strip("'")
+        if public_sub_url.startswith("http") and admin_path:
+            from urllib.parse import urlsplit
+            parts = urlsplit(public_sub_url)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}/{admin_path.lstrip('/')}"
+    return ""
+
+def detect_cdn_sub_url():
+    # 从订阅服务配置获取 CDN 订阅地址（权威来源，含 ?refresh=1 等查询参数）：
+    #   1. 扫 env 文件里的 PUBLIC_SUB_URL=（cf-dynamic-sub 结构，值即完整地址）
+    #   2. 从 state.json 用 cdn_host + sub_path 拼接，并补 ?refresh=1（jp-cdn-sub 结构）
+    # 都取不到返回空，由调用方回退到 grep 匹配
+    import glob
+    env_paths = sorted(set(
+        glob.glob("/etc/*admin.env") + glob.glob("/etc/*/admin.env") +
+        glob.glob("/etc/*.env") + glob.glob("/etc/*/*.env")
+    ))
+    for env_path in env_paths:
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*PUBLIC_SUB_URL\s*=\s*(.+)', line)
+            if m:
+                url = m.group(1).strip().strip('"').strip("'")
+                if url.startswith("http"):
+                    return url
+    for state_path in sorted(glob.glob("/etc/*/state.json")):
+        try:
+            state = json.loads(read(state_path))
+        except Exception:
+            continue
+        cdn_host = str(state.get("cdn_host", "")).strip()
+        sub_path = str(state.get("sub_path", "")).strip()
+        if cdn_host and sub_path:
+            url = f"https://{cdn_host}/{sub_path.lstrip('/')}"
+            if "refresh=" not in url:
+                url += "?refresh=1"
+            return url
+    return ""
+
+def detect_preferred_sources():
+    # 读取订阅服务实际使用的优选源文件（CDN 正在用的源），权威回填。
+    #   1. 从 systemd 服务配置读 SUB_SOURCE_FILE / ANYVPS_SOURCE_FILE 指定的路径
+    #   2. 回退扫描 /var/lib/*/sources.json
+    # 文件内容支持 JSON 数组或每行一个 URL；取不到返回空，由调用方回退到 grep。
+    import glob
+    env_paths = sorted(set(
+        glob.glob("/etc/*admin.env") + glob.glob("/etc/*/admin.env") +
+        glob.glob("/etc/*.env") + glob.glob("/etc/*/*.env")
+    ))
+    for env_path in env_paths:
+        lines = []
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*(?:SOURCES|PREFERRED_SOURCES|PREFERRED_SOURCE_URLS|SOURCE_URLS)\s*=\s*(.+)', line)
+            if not m:
+                continue
+            value = m.group(1).strip().strip('"').strip("'")
+            for item in re.split(r'[\s,]+', value):
+                item = item.strip().strip('"').strip("'")
+                if item.startswith(("http://", "https://")):
+                    lines.append(item)
+        if lines:
+            return "\n".join(lines[:100])
+    candidates = []
+    for svc_path in sorted(glob.glob("/etc/systemd/system/*.service")):
+        for line in read(svc_path).splitlines():
+            m = re.search(r'(?:SUB_SOURCE_FILE|ANYVPS_SOURCE_FILE)\s*=\s*(\S+)', line)
+            if m:
+                candidates.append(m.group(1).strip().strip('"').strip("'"))
+    candidates += sorted(glob.glob("/var/lib/*/sources.json"))
+    seen = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        raw = read(path).strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                lines = [str(x).strip() for x in data if str(x).strip()]
+            else:
+                lines = [str(data).strip()]
+        except Exception:
+            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if lines:
+            return "\n".join(lines[:20])
+    return ""
+
 urls = collect_urls()
 host = socket.gethostname()
 agent_source_file = detect_source_file()
@@ -384,12 +633,12 @@ result = {
     "host_hint": public_ip(),
     "role": service_hint(),
     "status": "待刷新",
-    "admin_url": first_url(urls, "admindav") or first_url(urls, "youxuan"),
+    "admin_url": detect_admin_url() or first_url(urls, "admindav") or first_url(urls, "youxuan"),
     "health_url": first_url(urls, "health"),
     "xui_sub_url": pick_subscription(urls, "xui"),
     "combo_sub_url": pick_subscription(urls, "combo"),
-    "cdn_sub_url": pick_subscription(urls, "cdn"),
-    "preferred_sources": "\n".join([u for u in urls if ("bestcf" in u.lower() or "youxuan" in u.lower() or u.endswith(".txt"))][:20]),
+    "cdn_sub_url": detect_cdn_sub_url() or pick_subscription(urls, "cdn"),
+    "preferred_sources": detect_preferred_sources() or "\n".join([u for u in urls if ("bestcf" in u.lower() or "youxuan" in u.lower())][:20]),
     "agent_source_file": agent_source_file,
     "agent_refresh_command": detect_refresh_command(agent_source_file),
     "agent_verify_url": detect_verify_url(urls),
@@ -436,6 +685,8 @@ cat > "$AGENT_PATH" <<'AGENT_EOF'
 #!/usr/bin/env python3
 import json
 import os
+import re
+import socket
 import sys
 import time
 import subprocess
@@ -445,20 +696,29 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-MANAGER_URL = os.getenv("ANYVPS_MANAGER_URL", "__ANYVPS_PUBLIC_URL__")
+MANAGER_URL = os.getenv("ANYVPS_MANAGER_URL", "https://anyvps.240314.xyz")
 VPS_ID = os.getenv("ANYVPS_VPS_ID", "")
 AGENT_TOKEN = os.getenv("ANYVPS_AGENT_TOKEN", "")
 LOCAL_SOURCE_FILE = os.getenv("ANYVPS_SOURCE_FILE", "")
 LOCAL_REFRESH_COMMAND = os.getenv("ANYVPS_REFRESH_COMMAND", "")
 LOCAL_VERIFY_URL = os.getenv("ANYVPS_VERIFY_URL", "")
+SNAPSHOT_STATE_FILE = os.getenv("ANYVPS_SNAPSHOT_STATE_FILE", "/var/lib/anyvps-agent/last_snapshot_date")
 MAX_SOURCE_LINES = 100
+SECRET_WORDS = re.compile(r"(pass|password|passwd|secret|key|uuid|private|credential)", re.I)
+URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+SERVER_NAME_RE = re.compile(r"\bserver_name\s+([^;]+);")
+PATH_RE = re.compile(r"(?<![A-Za-z0-9])/(?:sub|subs|s/(?:cdn|default)|api/subs|download|sub/)[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]*")
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 def http_post(path, data):
     try:
-        req = urllib.request.Request(f"{MANAGER_URL}{path}", data=json.dumps(data).encode(), headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            f"{MANAGER_URL}{path}",
+            data=json.dumps(data).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": "AnyVPS-Agent/0.3"},
+        )
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except Exception as e:
@@ -471,6 +731,107 @@ def heartbeat():
         return True
     log("心跳失败")
     return False
+
+def sh(cmd):
+    try:
+        return subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL, timeout=8).strip()
+    except Exception:
+        return ""
+
+def read(path, limit=200000):
+    try:
+        return Path(path).read_text(errors="ignore")[:limit]
+    except Exception:
+        return ""
+
+def public_ip():
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        out = sh(f"curl -fsSL --max-time 5 {url}")
+        if out:
+            return out.splitlines()[0].strip()
+    return ""
+
+def collect_texts():
+    paths = ["/etc/nginx/nginx.conf", "/etc/nginx/conf.d", "/etc/x-ui", "/opt/x-ui", "/root/sub", "/root/cf-dynamic-sub", "/root/la-cdn-sub", "/root/jp-cdn-sub", "/root/yuntub-sub"]
+    texts = []
+    for p in paths:
+        if not os.path.exists(p):
+            continue
+        if os.path.isfile(p):
+            texts.append((p, read(p)))
+        else:
+            for entry in Path(p).rglob("*"):
+                try:
+                    if entry.is_file() and entry.stat().st_size < 500_000:
+                        texts.append((str(entry), read(str(entry))))
+                except OSError:
+                    pass
+    return texts
+
+def derive_urls(texts):
+    hosts, paths = [], []
+    for _name, text in texts:
+        for m in SERVER_NAME_RE.finditer(text):
+            for host in m.group(1).split():
+                host = host.strip()
+                if not host or host in {"_", "localhost"} or "*" in host:
+                    continue
+                if "." in host and host not in hosts:
+                    hosts.append(host)
+        for path in PATH_RE.findall(text):
+            clean = path.rstrip(");,")
+            if len(clean) > 2 and clean not in paths:
+                paths.append(clean)
+    return [f"https://{host}{path}" for host in hosts[:12] for path in paths[:40]]
+
+def collect_urls():
+    texts = collect_texts()
+    urls, seen = [], set()
+    for _name, text in texts:
+        for url in URL_RE.findall(text):
+            clean = url.rstrip("),.;")
+            if SECRET_WORDS.search(clean):
+                continue
+            if clean not in seen:
+                seen.add(clean)
+                urls.append(clean)
+    for url in derive_urls(texts):
+        if SECRET_WORDS.search(url):
+            continue
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+def first_url(urls, *needles):
+    for url in urls:
+        lower = url.lower()
+        if all(n.lower() in lower for n in needles):
+            return url
+    return ""
+
+def pick_subscription(urls, kind):
+    preferred = {
+        "xui": ("/sub/", "/sub?", "/sub", "xui", "3x"),
+        "combo": ("/s/default", "/api/subs", "default", "combo", "all-in-one", "all"),
+        "cdn": ("/s/cdn", "cdn", "refresh=1"),
+    }[kind]
+    for needle in preferred:
+        found = first_url(urls, needle)
+        if found:
+            return found
+    return ""
+
+def service_hint():
+    names = []
+    for service in ("x-ui", "3x-ui", "nginx", "sing-box", "docker", "cf-dynamic-sub", "la-cdn-sub", "jp-cdn-sub", "yuntub-sub"):
+        active = sh(f"systemctl is-active {service}")
+        if active:
+            names.append(f"{service}:{active}")
+    return " · ".join(names)
+
+def active_service(name):
+    return sh(f"systemctl is-active {name}") == "active"
 
 def add_refresh_param(url):
     parsed = urlparse(url)
@@ -543,6 +904,156 @@ def detect_refresh_command(source_file):
         if service in source_file and subprocess.run(f"systemctl is-active --quiet {service}", shell=True).returncode == 0:
             return f"systemctl restart {service}"
     return ""
+
+def detect_admin_url():
+    for state_path in sorted(Path("/etc").glob("*/state.json")):
+        try:
+            state = json.loads(read(state_path))
+        except Exception:
+            continue
+        admin_host = str(state.get("admin_host", "")).strip()
+        if not admin_host:
+            continue
+        admin_env = state_path.parent / "admin.env"
+        admin_path = ""
+        for line in read(admin_env).splitlines():
+            m = re.match(r'\s*[A-Z0-9_]*ADMIN_PATH\s*=\s*(.+)', line)
+            if m:
+                admin_path = m.group(1).strip().strip('"').strip("'")
+                break
+        return f"https://{admin_host}/{admin_path.lstrip('/')}" if admin_path else f"https://{admin_host}"
+    env_paths = sorted(set(
+        list(Path("/etc").glob("*admin.env")) +
+        list(Path("/etc").glob("*/admin.env")) +
+        list(Path("/etc").glob("*.env")) +
+        list(Path("/etc").glob("*/*.env"))
+    ))
+    for env_path in env_paths:
+        public_sub_url = ""
+        admin_path = ""
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*PUBLIC_SUB_URL\s*=\s*(.+)', line)
+            if m:
+                public_sub_url = m.group(1).strip().strip('"').strip("'")
+            m = re.match(r'\s*[A-Z0-9_]*ADMIN_PATH\s*=\s*(.+)', line)
+            if m:
+                admin_path = m.group(1).strip().strip('"').strip("'")
+        if public_sub_url.startswith("http") and admin_path:
+            from urllib.parse import urlsplit
+            parts = urlsplit(public_sub_url)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}/{admin_path.lstrip('/')}"
+    return ""
+
+def detect_cdn_sub_url():
+    env_paths = sorted(set(
+        list(Path("/etc").glob("*admin.env")) +
+        list(Path("/etc").glob("*/admin.env")) +
+        list(Path("/etc").glob("*.env")) +
+        list(Path("/etc").glob("*/*.env"))
+    ))
+    for env_path in env_paths:
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*PUBLIC_SUB_URL\s*=\s*(.+)', line)
+            if m:
+                url = m.group(1).strip().strip('"').strip("'")
+                if url.startswith("http"):
+                    return url
+    for state_path in sorted(Path("/etc").glob("*/state.json")):
+        try:
+            state = json.loads(read(state_path))
+        except Exception:
+            continue
+        cdn_host = str(state.get("cdn_host", "")).strip()
+        sub_path = str(state.get("sub_path", "")).strip()
+        if cdn_host and sub_path:
+            url = f"https://{cdn_host}/{sub_path.lstrip('/')}"
+            return url if "refresh=" in url else f"{url}?refresh=1"
+    return ""
+
+def detect_preferred_sources():
+    env_paths = sorted(set(
+        list(Path("/etc").glob("*admin.env")) +
+        list(Path("/etc").glob("*/admin.env")) +
+        list(Path("/etc").glob("*.env")) +
+        list(Path("/etc").glob("*/*.env"))
+    ))
+    for env_path in env_paths:
+        lines = []
+        for line in read(env_path).splitlines():
+            m = re.match(r'\s*(?:SOURCES|PREFERRED_SOURCES|PREFERRED_SOURCE_URLS|SOURCE_URLS)\s*=\s*(.+)', line)
+            if not m:
+                continue
+            value = m.group(1).strip().strip('"').strip("'")
+            for item in re.split(r'[\s,]+', value):
+                item = item.strip().strip('"').strip("'")
+                if item.startswith(("http://", "https://")):
+                    lines.append(item)
+        if lines:
+            return "\n".join(lines[:100])
+    candidates = []
+    for svc_path in sorted(Path("/etc/systemd/system").glob("*.service")):
+        for line in read(svc_path).splitlines():
+            m = re.search(r'(?:SUB_SOURCE_FILE|ANYVPS_SOURCE_FILE)\s*=\s*(\S+)', line)
+            if m:
+                candidates.append(m.group(1).strip().strip('"').strip("'"))
+    candidates += [str(path) for path in sorted(Path("/var/lib").glob("*/sources.json"))]
+    seen = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        raw = read(path).strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                lines = [str(x).strip() for x in data if str(x).strip()]
+            else:
+                lines = [str(data).strip()]
+        except Exception:
+            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if lines:
+            return "\n".join(lines[:100])
+    return ""
+
+def collect_snapshot():
+    urls = collect_urls()
+    source_file = detect_source_file()
+    return {
+        "name": socket.gethostname(),
+        "host_hint": public_ip(),
+        "role": service_hint(),
+        "admin_url": detect_admin_url() or first_url(urls, "admindav") or first_url(urls, "youxuan"),
+        "health_url": first_url(urls, "health"),
+        "xui_sub_url": pick_subscription(urls, "xui"),
+        "combo_sub_url": pick_subscription(urls, "combo"),
+        "cdn_sub_url": detect_cdn_sub_url() or pick_subscription(urls, "cdn"),
+        "preferred_sources": detect_preferred_sources() or "\n".join([u for u in urls if ("bestcf" in u.lower() or "youxuan" in u.lower())][:20]),
+        "agent_source_file": source_file,
+        "agent_refresh_command": detect_refresh_command(source_file),
+        "agent_verify_url": LOCAL_VERIFY_URL or pick_subscription(urls, "cdn") or pick_subscription(urls, "combo") or pick_subscription(urls, "xui"),
+        "agent_version": "2026-07-13-daily-snapshot",
+    }
+
+def snapshot_once(reason="daily_0300"):
+    payload = collect_snapshot()
+    payload.update({"vps_id": VPS_ID, "agent_token": AGENT_TOKEN, "reason": reason})
+    result = http_post("/api/agent/snapshot", payload)
+    if result and result.get("ok"):
+        log(f"快照回传成功: {reason}")
+        return True
+    log(f"快照回传失败: {reason}")
+    return False
+
+def read_last_snapshot_date():
+    return read(SNAPSHOT_STATE_FILE, 100).strip()
+
+def write_last_snapshot_date(value):
+    path = Path(SNAPSHOT_STATE_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
 
 def encode_sources(path, lines):
     if path.endswith(".json"):
@@ -617,10 +1128,19 @@ def main():
         if now - last_heartbeat >= 300:
             heartbeat()
             last_heartbeat = now
+        today = datetime.now().strftime("%Y-%m-%d")
+        if datetime.now().hour == 3 and read_last_snapshot_date() != today:
+            if snapshot_once("daily_0300"):
+                write_last_snapshot_date(today)
         poll_once()
         time.sleep(60)
 
 if __name__ == "__main__":
+    if "--snapshot-now" in sys.argv:
+        if not VPS_ID or not AGENT_TOKEN:
+            log("错误: 未设置 ANYVPS_VPS_ID 或 ANYVPS_AGENT_TOKEN")
+            sys.exit(1)
+        sys.exit(0 if snapshot_once("manual_verify") else 1)
     main()
 AGENT_EOF
 
@@ -661,14 +1181,229 @@ else
     exit 1
 fi
 
+# 5. 部署 Webhook 接收器
+echo "==> 部署 Webhook 接收器..."
+curl -fsSL -o /usr/local/bin/anyvps-webhook-receiver.py "$MANAGER_URL/vps-webhook-receiver.py"
+chmod +x /usr/local/bin/anyvps-webhook-receiver.py
+
+# 5.0 探测本机订阅服务：找到 sources.json 及其对应的 systemd 服务名
+echo "==> 探测订阅服务..."
+DETECTED_SOURCE_FILE=""
+DETECTED_SERVICE=""
+for f in /var/lib/*/sources.json; do
+    [ -f "$f" ] || continue
+    DETECTED_SOURCE_FILE="$f"
+    dir_name=$(basename "$(dirname "$f")")
+    # 验证同名 systemd 服务存在
+    if systemctl list-unit-files "${dir_name}.service" >/dev/null 2>&1 && \
+       systemctl cat "${dir_name}.service" >/dev/null 2>&1; then
+        DETECTED_SERVICE="$dir_name"
+    fi
+    break
+done
+if [ -n "$DETECTED_SOURCE_FILE" ]; then
+    echo "✓ 探测到源文件: $DETECTED_SOURCE_FILE"
+    echo "✓ 探测到服务名: ${DETECTED_SERVICE:-（未匹配到服务，接收器将按目录名推断）}"
+else
+    echo "· 未探测到 /var/lib/*/sources.json，接收器将在运行时自动扫描"
+fi
+
+cat > /etc/systemd/system/anyvps-webhook.service <<WEBHOOK_EOF
+[Unit]
+Description=AnyVPS Webhook Receiver
+After=network.target
+
+[Service]
+Type=simple
+Environment="ANYVPS_SOURCE_FILE=${DETECTED_SOURCE_FILE}"
+Environment="ANYVPS_RESTART_SERVICE=${DETECTED_SERVICE}"
+ExecStart=/usr/bin/python3 /usr/local/bin/anyvps-webhook-receiver.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+WEBHOOK_EOF
+
+systemctl daemon-reload
+systemctl enable anyvps-webhook
+systemctl restart anyvps-webhook
+
+if systemctl is-active --quiet anyvps-webhook; then
+    echo "✓ Webhook 接收器已启动 (端口 18964)"
+else
+    echo "✗ Webhook 接收器启动失败"
+fi
+
+# 5.1 自动放行 18964 端口
+echo "==> 放行 18964 端口..."
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow 18964/tcp >/dev/null 2>&1 && echo "✓ ufw 已放行 18964/tcp"
+elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port=18964/tcp >/dev/null 2>&1
+    firewall-cmd --reload >/dev/null 2>&1 && echo "✓ firewalld 已放行 18964/tcp"
+elif command -v iptables >/dev/null 2>&1; then
+    if ! iptables -C INPUT -p tcp --dport 18964 -j ACCEPT >/dev/null 2>&1; then
+        iptables -I INPUT -p tcp --dport 18964 -j ACCEPT >/dev/null 2>&1 && echo "✓ iptables 已放行 18964/tcp"
+    else
+        echo "✓ iptables 规则已存在"
+    fi
+    command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1 || true
+else
+    echo "· 未检测到活动防火墙，跳过（如有云平台安全组请手动放行 18964）"
+fi
+
+# 6. 自动配置 Webhook URL 到管理端
+echo "==> 自动配置 Webhook URL..."
+PUBLIC_IP=$(printf '%s' "$VPS_INFO" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("host_hint",""))')
+WEBHOOK_URL="http://${PUBLIC_IP}:18964/webhook"
+curl -fsSL -X POST "$MANAGER_URL/api/set-webhook" \
+    -H "Content-Type: application/json" \
+    -d "{\"vps_id\":$VPS_ID,\"sync_webhook_url\":\"$WEBHOOK_URL\"}" >/dev/null 2>&1
+echo "✓ Webhook URL 已配置: $WEBHOOK_URL"
+
 echo ""
 echo "=========================================="
 echo "✓ AnyVPS 部署完成！"
 echo "=========================================="
 echo "VPS ID: $VPS_ID"
 echo "管理端: $MANAGER_URL"
+echo "Webhook URL: $WEBHOOK_URL"
 echo "=========================================="
 """
+
+WEBHOOK_RECEIVER_SCRIPT = r'''#!/usr/bin/env python3
+"""
+AnyVPS Webhook 接收器
+部署在 VPS 上，接收优选 IP 源更新通知
+写入订阅服务的 sources.json 并重启对应服务
+
+配置来源（优先级从高到低）：
+  1. 环境变量 ANYVPS_SOURCE_FILE / ANYVPS_RESTART_SERVICE（安装时自动探测写入）
+  2. 运行时自动探测 /var/lib/*/sources.json 及对应 systemd 服务
+"""
+import glob
+import json
+import os
+import subprocess
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+
+
+PORT = 18964
+
+
+def detect_source_file():
+    """自动探测 sources.json：优先环境变量，否则扫描 /var/lib/*/sources.json"""
+    env = os.getenv("ANYVPS_SOURCE_FILE", "").strip()
+    if env:
+        return env
+    candidates = sorted(glob.glob("/var/lib/*/sources.json"))
+    return candidates[0] if candidates else "/var/lib/jp-cdn-sub/sources.json"
+
+
+def detect_service(source_file):
+    """自动探测要重启的服务名：优先环境变量，否则从源文件所在目录名推断"""
+    env = os.getenv("ANYVPS_RESTART_SERVICE", "").strip()
+    if env:
+        return env
+    # /var/lib/jp-cdn-sub/sources.json -> jp-cdn-sub
+    name = Path(source_file).parent.name
+    return name or "jp-cdn-sub"
+
+
+SOURCE_FILE = detect_source_file()
+SERVICE_TO_RESTART = detect_service(SOURCE_FILE)
+
+
+class WebhookHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        print(f"[{self.log_date_time_string()}] {format % args}")
+
+    def do_POST(self):
+        if self.path != "/webhook":
+            self.send_error(404)
+            return
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+
+        try:
+            data = json.loads(body)
+            preferred_sources = data.get("preferred_sources", "")
+
+            if not preferred_sources:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"ok": false, "error": "preferred_sources is empty"}')
+                return
+
+            # 解析优选源为 URL 列表（每行一个）
+            urls = [line.strip() for line in preferred_sources.splitlines() if line.strip()]
+
+            # 写入 sources.json（JSON 数组格式，jp-cdn-sub 期望的格式）
+            Path(SOURCE_FILE).parent.mkdir(parents=True, exist_ok=True)
+            Path(SOURCE_FILE).write_text(json.dumps(urls, ensure_ascii=False), encoding="utf-8")
+            print(f"✓ 优选源已写入 {SOURCE_FILE}: {len(urls)} 个 URL")
+
+            # 重启 jp-cdn-sub 服务
+            restarted = False
+            try:
+                result = subprocess.run(
+                    ["systemctl", "restart", SERVICE_TO_RESTART],
+                    capture_output=True, timeout=15
+                )
+                if result.returncode == 0:
+                    restarted = True
+                    print(f"✓ 服务已重启: {SERVICE_TO_RESTART}")
+                else:
+                    print(f"✗ 服务重启失败: {result.stderr.decode()}")
+            except Exception as e:
+                print(f"✗ 重启服务异常: {e}")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            response = {
+                "ok": True,
+                "message": "优选源已更新",
+                "file": SOURCE_FILE,
+                "count": len(urls),
+                "restarted": restarted
+            }
+            self.wfile.write(json.dumps(response).encode("utf-8"))
+
+        except Exception as e:
+            print(f"✗ 处理失败: {e}")
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode("utf-8"))
+
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        else:
+            self.send_error(404)
+
+
+def main():
+    server = HTTPServer(("0.0.0.0", PORT), WebhookHandler)
+    print(f"==> AnyVPS Webhook 接收器启动")
+    print(f"==> 监听端口: {PORT}")
+    print(f"==> 源文件: {SOURCE_FILE}")
+    print(f"==> 重启服务: {SERVICE_TO_RESTART}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n==> 服务停止")
+
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 def now_ts() -> int:
@@ -1071,7 +1806,6 @@ def source_label(line: str) -> str:
 def gather_source_endpoints(source_lines: list[str]) -> tuple[list[dict], list[str]]:
     endpoints = []
     errors = []
-    seen = set()
     for raw in source_lines:
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -1089,9 +1823,6 @@ def gather_source_endpoints(source_lines: list[str]) -> tuple[list[dict], list[s
                 errors.append(f"{label} {type(exc).__name__}")
                 continue
         for item in parse_endpoints(content, label):
-            if item["endpoint"] in seen:
-                continue
-            seen.add(item["endpoint"])
             endpoints.append(item)
             if len(endpoints) >= IP_CHECK_LIMIT:
                 return endpoints, errors
@@ -1173,6 +1904,17 @@ def add_refresh_param(url: str) -> str:
     query = parse_qs(parsed.query)
     query["refresh"] = ["1"]
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def add_no_cache_param(url: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    query["noCache"] = ["true"]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def substore_verify_url(row: sqlite3.Row | dict, requested: str = "") -> str:
+    return clean_text(requested) or row["substore_base64_url"] or row["substore_cdn_base64_url"] or row["substore_combo_base64_url"] or row["substore_xui_base64_url"]
 
 
 def verify_subscription(url: str) -> dict:
@@ -1366,38 +2108,36 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
     # SubStore 配置（从环境变量读取）
     SUBSTORE_API = os.getenv("SUBSTORE_API", "http://localhost:3001")
     SUBSTORE_TOKEN = os.getenv("SUBSTORE_TOKEN", "")
-    SUBSTORE_BASE_URL = os.getenv("SUBSTORE_BASE_URL") or (f"{PUBLIC_URL}/substore" if PUBLIC_URL else "/substore")
+    SUBSTORE_BASE_URL = os.getenv("SUBSTORE_BASE_URL", "https://anyvps.240314.xyz/substore")
 
     # 生成订阅项名称：vps名称-类型 (如: yunyo-cdn)
     item_name = f"{vps_name.lower().replace(' ', '-')}-{source_type}"
 
     try:
-        # 策略：先删除旧订阅（如果存在），然后创建新的
-        # 这样可以避免 SubStore API 的重复键和更新问题
-
+        # 策略：先删除旧订阅（用正确的单数路径 /api/sub/），然后创建
         print(f"[SubStore] 处理订阅: {item_name}")
 
-        # 1. 尝试删除现有订阅（URL 编码名称）
-        encoded_name = quote(item_name, safe='')
-        delete_req = urlrequest.Request(
-            f"{SUBSTORE_API}/api/subs/{encoded_name}",
-            headers={"Authorization": f"Bearer {SUBSTORE_TOKEN}"},
-            method="DELETE",
-        )
-        try:
-            with urlrequest.urlopen(delete_req, timeout=5) as resp:
-                print(f"[SubStore] DELETE (encoded) 状态码: {resp.status}")
-        except urlerror.HTTPError as exc:
-            print(f"[SubStore] DELETE (encoded) 状态码: {exc.code}")
-
-        # 2. 创建新订阅
         config = {
             "name": item_name,
             "url": source_url,
             "icon": "",
             "ua": ""
         }
+        encoded_name = quote(item_name, safe='')
 
+        # 1. 删除现有订阅（正确路径是单数 /api/sub/）
+        delete_req = urlrequest.Request(
+            f"{SUBSTORE_API}/api/sub/{encoded_name}",
+            headers={"Authorization": f"Bearer {SUBSTORE_TOKEN}"},
+            method="DELETE",
+        )
+        try:
+            with urlrequest.urlopen(delete_req, timeout=5) as resp:
+                print(f"[SubStore] DELETE 状态码: {resp.status}")
+        except urlerror.HTTPError as exc:
+            print(f"[SubStore] DELETE 状态码: {exc.code}")
+
+        # 2. 创建新订阅（POST 用复数 /api/subs）
         print(f"[SubStore] 创建订阅: {item_name}")
         post_req = urlrequest.Request(
             f"{SUBSTORE_API}/api/subs",
@@ -1415,6 +2155,7 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
         except urlerror.HTTPError as exc:
             post_status = exc.code
             post_text = exc.read(20_000).decode("utf-8", "ignore")
+
         print(f"[SubStore] POST 状态码: {post_status}, 响应: {post_text[:200]}")
 
         if post_status not in [200, 201]:
@@ -1422,11 +2163,15 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
 
         # 2. 生成各格式的转换链接
         urls = {
-            "base64": f"{SUBSTORE_BASE_URL}/download/{item_name}",
-            "mihomo": f"{SUBSTORE_BASE_URL}/download/{item_name}?target=Clash",
-            "surge": f"{SUBSTORE_BASE_URL}/download/{item_name}?target=Surge&ver=4",
-            "singbox": f"{SUBSTORE_BASE_URL}/download/{item_name}?target=SingBox"
+            "base64": f"{SUBSTORE_BASE_URL}/download/{encoded_name}",
+            "mihomo": f"{SUBSTORE_BASE_URL}/download/{encoded_name}?target=Clash",
+            "surge": f"{SUBSTORE_BASE_URL}/download/{encoded_name}?target=Surge&ver=4",
+            "singbox": f"{SUBSTORE_BASE_URL}/download/{encoded_name}?target=SingBox"
         }
+
+        verification = verify_subscription(add_no_cache_param(urls["base64"]))
+        if not verification["valid"]:
+            return {"ok": False, "error": "SubStore 已创建，但实时刷新验证失败"}
 
         # 3. 更新数据库（根据订阅类型更新对应字段）
         with get_conn() as conn:
@@ -1501,7 +2246,8 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
         return {
             "ok": True,
             "item_name": item_name,
-            "urls": urls
+            "urls": urls,
+            "verification": verification,
         }
 
     except Exception as e:
@@ -1590,16 +2336,6 @@ class Handler(BaseHTTPRequestHandler):
         )
         super().end_headers()
 
-    def public_url(self) -> str:
-        if PUBLIC_URL:
-            return PUBLIC_URL
-        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or f"127.0.0.1:{PORT}"
-        proto = self.headers.get("X-Forwarded-Proto") or ("https" if self.headers.get("X-Forwarded-SSL") == "on" else "http")
-        return f"{proto}://{host}".rstrip("/")
-
-    def render_public_url(self, text: str) -> str:
-        return text.replace("__ANYVPS_PUBLIC_URL__", self.public_url())
-
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/healthz":
@@ -1609,7 +2345,55 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/install.sh":
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
-            payload = self.render_public_url(INSTALL_SCRIPT).encode()
+            payload = INSTALL_SCRIPT.encode()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if path == "/vps-webhook-receiver.py":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            payload = WEBHOOK_RECEIVER_SCRIPT.encode()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if path == "/install-webhook.sh":
+            install_webhook_script = r"""#!/bin/bash
+# AnyVPS Webhook 接收器部署脚本
+set -e
+echo "==> 部署 AnyVPS Webhook 接收器..."
+curl -fsSL -o /usr/local/bin/anyvps-webhook-receiver.py https://anyvps.240314.xyz/vps-webhook-receiver.py
+chmod +x /usr/local/bin/anyvps-webhook-receiver.py
+cat > /etc/systemd/system/anyvps-webhook.service <<'EOF'
+[Unit]
+Description=AnyVPS Webhook Receiver
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/anyvps-webhook-receiver.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable anyvps-webhook
+systemctl restart anyvps-webhook
+if systemctl is-active --quiet anyvps-webhook; then
+    echo "✓ Webhook 接收器已启动"
+    echo "监听端口: 18964"
+    echo "查看日志: journalctl -u anyvps-webhook -f"
+else
+    echo "✗ 服务启动失败"
+    exit 1
+fi
+"""
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            payload = install_webhook_script.encode()
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -1626,7 +2410,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/remote-code":
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
-            payload = self.render_public_url(REMOTE_COLLECTOR_SCRIPT).encode()
+            payload = REMOTE_COLLECTOR_SCRIPT.encode()
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -1648,8 +2432,12 @@ class Handler(BaseHTTPRequestHandler):
         # Agent API - 不需要登录
         if path == "/api/register-vps":
             return self.handle_register_vps()
+        if path == "/api/set-webhook":
+            return self.handle_set_webhook()
         if path == "/api/agent/heartbeat":
             return self.handle_agent_heartbeat()
+        if path == "/api/agent/snapshot":
+            return self.handle_agent_snapshot()
         if path == "/api/agent/poll":
             return self.handle_agent_poll()
         if path == "/api/agent/report":
@@ -1767,6 +2555,28 @@ class Handler(BaseHTTPRequestHandler):
                 f"update vps set {sets}, updated_at=? where id=?",
                 [*values.values(), now_ts(), vps_id],
             )
+
+        # 如果有 sync_webhook_url，发送 Webhook 通知 VPS 更新优选 IP 源
+        webhook_url = values.get("sync_webhook_url", "").strip()
+        if webhook_url and values.get("preferred_sources"):
+            try:
+                import urllib.request
+                webhook_data = {
+                    "vps_id": vps_id,
+                    "preferred_sources": values["preferred_sources"]
+                }
+                req = urllib.request.Request(
+                    webhook_url,
+                    data=json.dumps(webhook_data).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode())
+                    print(f"Webhook 发送成功: {webhook_url} -> {result}")
+            except Exception as e:
+                print(f"Webhook 发送失败: {webhook_url} -> {e}")
+
         return self.send_json({"ok": True})
 
     def handle_new_vps(self):
@@ -1854,12 +2664,23 @@ class Handler(BaseHTTPRequestHandler):
         agent_verify_url = clean_text(data.get("agent_verify_url", ""), 1000)
         agent_version = clean_text(data.get("agent_version", "2026-07-07-sync-agent"), 120)
 
+        admin_url_val = clean_text(data.get("admin_url", ""), 500)
         with get_conn() as conn:
-            # 检查是否已存在相同名称或 IP 的 VPS
-            existing = conn.execute(
-                "select id from vps where name=? or host_hint=?",
-                (name, host_hint)
-            ).fetchone()
+            # 匹配优先级：公网 IP > 优选管理页地址
+            # 不用 name 匹配：采集回传的是主机名，与手填中文名不一致，用它匹配会漏判并产生重复记录
+            # admin_url 作为兜底键，让首次重跑也能命中已有的手动命名记录（多数记录已存有正确 admin_url），
+            # 命中后会把公网 IP 写入 host_hint，之后即可稳定按 IP 匹配
+            existing = None
+            if host_hint:
+                existing = conn.execute(
+                    "select id from vps where host_hint=? and host_hint!=''",
+                    (host_hint,)
+                ).fetchone()
+            if not existing and admin_url_val:
+                existing = conn.execute(
+                    "select id from vps where admin_url=? and admin_url!=''",
+                    (admin_url_val,)
+                ).fetchone()
 
             if existing:
                 # 已存在，更新信息
@@ -1867,6 +2688,7 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("""
                     update vps set
                         role=?, admin_url=?, health_url=?,
+                        host_hint=case when ?!='' then ? else host_hint end,
                         xui_sub_url=?, combo_sub_url=?, cdn_sub_url=?,
                         preferred_sources=?,
                         agent_token_hash=?,
@@ -1880,6 +2702,7 @@ class Handler(BaseHTTPRequestHandler):
                     clean_text(data.get("role", ""), 500),
                     clean_text(data.get("admin_url", ""), 500),
                     clean_text(data.get("health_url", ""), 500),
+                    host_hint, host_hint,
                     clean_text(data.get("xui_sub_url", ""), 500),
                     clean_text(data.get("combo_sub_url", ""), 500),
                     clean_text(data.get("cdn_sub_url", ""), 500),
@@ -1900,16 +2723,17 @@ class Handler(BaseHTTPRequestHandler):
                 # 新 VPS，插入
                 cur = conn.execute("""
                     insert into vps(
-                        name, role, status, admin_url, health_url,
+                        name, role, status, host_hint, admin_url, health_url,
                         xui_sub_url, combo_sub_url, cdn_sub_url,
                         preferred_sources, agent_token_hash, agent_source_file,
                         agent_refresh_command, agent_verify_url, agent_version,
                         updated_at
-                    ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     name,
                     clean_text(data.get("role", ""), 500),
                     "待刷新",
+                    host_hint,
                     clean_text(data.get("admin_url", ""), 500),
                     clean_text(data.get("health_url", ""), 500),
                     clean_text(data.get("xui_sub_url", ""), 500),
@@ -1931,6 +2755,20 @@ class Handler(BaseHTTPRequestHandler):
 
         return self.send_json({"ok": True, "vps_id": vps_id, "name": name, "agent_token": agent_token})
 
+    def handle_set_webhook(self):
+        """设置 VPS 的 Webhook URL（由一键部署脚本调用）"""
+        data = self.read_json()
+        vps_id = int(data.get("vps_id", 0))
+        webhook_url = clean_text(data.get("sync_webhook_url", ""), 500)
+        if not vps_id or not webhook_url:
+            return self.send_json({"ok": False, "error": "参数不完整"})
+        with get_conn() as conn:
+            conn.execute(
+                "update vps set sync_webhook_url=?, updated_at=? where id=?",
+                (webhook_url, now_ts(), vps_id),
+            )
+        return self.send_json({"ok": True, "vps_id": vps_id, "sync_webhook_url": webhook_url})
+
     def handle_agent_heartbeat(self):
         """处理 Agent 心跳请求"""
         data = self.read_json()
@@ -1943,12 +2781,6 @@ class Handler(BaseHTTPRequestHandler):
             row = conn.execute("select name from vps where id=?", (vps_id,)).fetchone()
             if not row:
                 return self.send_json({"ok": False, "error": "vps_not_found"})
-
-            # 更新最后上报时间
-            conn.execute(
-                "update vps set last_sync_at=? where id=?",
-                (now_ts(), vps_id)
-            )
 
             conn.execute(
                 "insert into tasks(vps_id,kind,status,message,created_at) values(?,?,?,?,?)",
@@ -1971,6 +2803,59 @@ class Handler(BaseHTTPRequestHandler):
             return row
         return None
 
+    def handle_agent_snapshot(self):
+        """Agent 每日回传本机实际探测到的订阅、优选源和执行器配置。"""
+        data = self.read_json()
+        row = self.authorize_agent(data)
+        if row is None:
+            return self.send_json({"ok": False, "error": "unauthorized"})
+
+        fields = {
+            "role": clean_text(data.get("role", ""), 500),
+            "admin_url": clean_text(data.get("admin_url", ""), 500),
+            "health_url": clean_text(data.get("health_url", ""), 500),
+            "host_hint": clean_text(data.get("host_hint", ""), 120),
+            "xui_sub_url": clean_text(data.get("xui_sub_url", ""), 500),
+            "combo_sub_url": clean_text(data.get("combo_sub_url", ""), 500),
+            "cdn_sub_url": clean_text(data.get("cdn_sub_url", ""), 500),
+            "preferred_sources": clean_text(data.get("preferred_sources", ""), 50000),
+            "agent_source_file": clean_text(data.get("agent_source_file", ""), 500),
+            "agent_refresh_command": clean_text(data.get("agent_refresh_command", ""), 1000),
+            "agent_verify_url": clean_text(data.get("agent_verify_url", ""), 1000),
+            "agent_version": clean_text(data.get("agent_version", "2026-07-13-daily-snapshot"), 120),
+        }
+        sets = []
+        values = []
+        for key, value in fields.items():
+            if value:
+                sets.append(f"{key}=?")
+                values.append(value)
+        reason = clean_text(data.get("reason", "daily_0300"), 80)
+        source_lines = len([line for line in fields["preferred_sources"].splitlines() if line.strip()])
+        check_rows = []
+        check_errors = []
+        if fields["preferred_sources"]:
+            check_rows, check_errors = collect_ip_check_rows(fields["preferred_sources"])
+        usable_count = sum(1 for item in check_rows if item["status"] in {"可用", "慢"})
+        cdn_status = "CDN已更新" if fields["cdn_sub_url"] else "CDN未探测到"
+        source_status = (
+            f"优选源{source_lines}行，解析{len(check_rows)}个，可用{usable_count}个"
+            if fields["preferred_sources"] else "优选源未探测到"
+        )
+        sync_message = f"{reason}：{cdn_status}，{source_status}"
+        sets.extend(["status=?", "last_sync_at=?", "last_sync_status=?", "updated_at=?"])
+        ts = now_ts()
+        values.extend(["已回传", ts, sync_message, ts, row["id"]])
+        with get_conn() as conn:
+            conn.execute(f"update vps set {','.join(sets)} where id=?", values)
+            if fields["preferred_sources"]:
+                write_ip_check_rows(conn, row["id"], check_rows, check_errors, "agent_snapshot_check", "快照后 IP 检测")
+            conn.execute(
+                "insert into tasks(vps_id,kind,status,message,created_at) values(?,?,?,?,?)",
+                (row["id"], "agent_snapshot", "done", sync_message, ts),
+            )
+        return self.send_json({"ok": True, "vps_id": row["id"], "updated": len(fields)})
+
     def handle_agent_poll(self):
         """Agent 拉取待执行的优选 IP 同步任务"""
         data = self.read_json()
@@ -1978,7 +2863,6 @@ class Handler(BaseHTTPRequestHandler):
         if row is None:
             return self.send_json({"ok": False, "error": "unauthorized"})
         with get_conn() as conn:
-            conn.execute("update vps set last_sync_at=? where id=?", (now_ts(), row["id"]))
             current = conn.execute("select * from vps where id=?", (row["id"],)).fetchone()
         if current["pending_sync_status"] != "pending" or not current["pending_sync_sources"].strip():
             return self.send_json({"ok": True, "task": None})
@@ -2070,11 +2954,11 @@ class Handler(BaseHTTPRequestHandler):
             row = conn.execute("select * from vps where id=?", (vps_id,)).fetchone()
             if row is None:
                 return self.send_json({"ok": False, "error": "vps_not_found"})
-            url = clean_text(data.get("url")) or row["substore_download_url"] or row["combo_sub_url"] or row["cdn_sub_url"]
+            url = substore_verify_url(row, data.get("url", ""))
         if not url:
             return self.send_json({"ok": False, "error": "download_url_empty"})
         try:
-            info = verify_subscription(url)
+            info = verify_subscription(add_no_cache_param(url))
             status = "done" if info["valid"] else "failed"
             message = f"Sub-Store 导出验证：HTTP {info['status']}，{info['bytes']} bytes，{info['lines']} 行"
             with get_conn() as conn:
@@ -2198,6 +3082,7 @@ APP_HTML = r"""<!doctype html>
 <style>
 :root{--bg:#eef9f7;--panel:#fff;--text:#151923;--muted:#737987;--line:#e8edf0;--teal:#10a88a;--teal-weak:#e5fbf4;--purple:#7c3aed;--amber:#d98b19;--red:#de3150;--green:#119d72;--shadow:0 10px 30px rgba(32,70,68,.08)}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#f8fbfb 0,#eef9f7 240px,#f7fafb 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}.app{display:grid;grid-template-columns:286px minmax(0,1fr) 326px;min-height:100vh}.side{background:rgba(255,255,255,.86);border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:10px;margin:2px 8px 18px}.logo{width:34px;height:34px;border-radius:10px;background:#dff9ee;color:var(--teal);display:grid;place-items:center;font-weight:900}.brand strong{font-size:18px}.search{height:38px;border:1px solid var(--line);border-radius:8px;padding:0 12px;width:100%;margin-bottom:14px}.vps-list{display:grid;gap:8px;overflow:auto;padding-bottom:10px}.side-tools{margin-top:auto;border-top:1px solid var(--line);padding-top:12px;display:grid;grid-template-columns:44px 1fr;gap:8px}.side-tool{height:38px;border:1px solid var(--line);background:#fff;border-radius:8px;color:#41505c;font-weight:800;cursor:pointer;transition:all .15s}.side-tool.primary-tool{background:var(--teal);border-color:var(--teal);color:#fff}.side-tool:hover{box-shadow:0 0 0 3px rgba(16,168,138,.1)}.side-tool:active{transform:translateY(1px)}.side-tool.primary-tool:active{background:#0f9977}.vps-row{position:relative;border:1px solid transparent;border-radius:8px;padding:10px 10px;background:transparent;cursor:pointer}.vps-row.active{background:#ecfbf7;border-color:#d8f3ec}.vps-row:hover{background:#f7fbfb}.vps-title{display:flex;justify-content:space-between;gap:8px;font-weight:700}.meta{font-size:12px;color:var(--muted);line-height:1.55;margin-top:3px}.dot{width:8px;height:8px;border-radius:99px;display:inline-block;background:var(--green);margin-right:5px}.dot.warn{background:var(--amber)}.dot.err{background:var(--red)}.ctx{position:absolute;width:168px;background:white;border:1px solid var(--line);box-shadow:var(--shadow);border-radius:8px;padding:6px;z-index:40;display:none}.ctx.open{display:block}.ctx button{display:block;width:100%;text-align:left;background:white;border:0;border-radius:6px;padding:9px 10px;color:#303846;cursor:pointer;transition:all .15s}.ctx button:hover{background:#f4fbfa}.ctx button:active{background:#e5f9f5}.ctx button.danger{color:#d92d43}.main{padding:18px 20px 32px}.top{height:54px;display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.mobile-menu{display:none}.top h1{font-size:20px;margin:0}.top-sub{font-size:12px;color:var(--muted);margin-top:3px}.actions{display:flex;align-items:center;gap:12px}.chip{border:1px solid var(--line);background:white;border-radius:99px;padding:6px 10px;font-size:12px;color:#4f5a66}.avatar{border:0;background:var(--teal);color:#fff;width:38px;height:38px;border-radius:12px;font-weight:800;cursor:pointer;transition:all .15s;position:absolute;right:20px;top:20px;z-index:15}.avatar:active{transform:scale(.95)}.user-menu{position:absolute;right:20px;top:62px;width:170px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);padding:8px;display:none;z-index:20}.user-menu.open{display:block}.user-menu .name{font-weight:800;padding:8px 10px;border-bottom:1px solid var(--line);margin-bottom:6px}.user-menu button{width:100%;text-align:left;border:0;background:#fff;border-radius:6px;padding:9px 10px;color:#d92d43;cursor:pointer;transition:all .15s}.user-menu button:active{background:#fee}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px}.card,.section,.right-card{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}.card{padding:14px;display:flex;gap:12px;align-items:center}.ico{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:#dff9ee;color:var(--teal);font-weight:800}.ico.p{background:#efe8ff;color:var(--purple)}.ico.a{background:#fff5d6;color:#bc7a00}.card .label{font-size:12px;color:var(--muted)}.card .num{font-weight:900;font-size:22px;margin-top:2px}.section{padding:14px;margin-bottom:12px}.section h2,.right-card h2{font-size:15px;margin:0 0 12px}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.form-grid label{font-size:12px;color:var(--muted);display:grid;gap:5px}.form-grid input,.form-grid select,.url-input{width:100%;height:36px;border:1px solid var(--line);border-radius:8px;background:#fbfdfd;padding:0 10px;color:#334155;outline:none}.form-grid input:focus,.form-grid select:focus,.url-input:focus,.editor:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(16,168,138,.1)}.tags{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.url-row{display:grid;grid-template-columns:120px minmax(0,1fr) 160px 66px;gap:8px;align-items:center;margin-bottom:8px}.url-row label{font-size:12px;color:var(--muted)}.url-row.substore-row{grid-template-columns:180px minmax(0,1fr) 66px;margin-bottom:0}.substore-format{height:36px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:0 10px;color:#334155;outline:none;cursor:pointer}.substore-format:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(16,168,138,.1)}.url{height:36px;border:1px solid var(--line);border-radius:8px;padding:0 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#334155;background:#fbfdfd}.mini{height:34px;border:1px solid var(--line);background:white;border-radius:8px;color:#506070;cursor:pointer;transition:all .15s;font-size:13px}.mini:hover{background:#f7fbfb}.mini:active{background:#ecfbf7;transform:translateY(1px)}.source-head{display:flex;justify-content:space-between;align-items:center;gap:10px}.tools{display:flex;gap:8px;flex-wrap:wrap}.primary{border:0;background:var(--teal);color:white;border-radius:8px;height:36px;padding:0 12px;font-weight:800;cursor:pointer;transition:all .15s}.primary:hover{background:#0eae87}.primary:active{background:#0f9977;transform:translateY(1px)}.primary:disabled{background:#93d8c8;cursor:not-allowed;transform:none}.secondary{border:1px solid var(--line);background:white;color:#41505c;border-radius:8px;height:36px;padding:0 12px;cursor:pointer;transition:all .15s}.secondary:hover{background:#f7fbfb;box-shadow:0 1px 3px rgba(0,0,0,.05)}.secondary:active{background:#ecfbf7;transform:translateY(1px)}.secondary:disabled{opacity:.5;cursor:not-allowed;transform:none}.editor{width:100%;height:116px;margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;outline:none}.filters{display:flex;gap:7px;margin-bottom:8px}.filter{border:1px solid var(--line);background:white;border-radius:99px;padding:5px 9px;font-size:12px;color:#576474}.filter.active{background:var(--teal-weak);color:var(--teal);border-color:#cfefe8}.table{width:100%;border-collapse:collapse;font-size:13px}.table th{text-align:left;color:var(--muted);font-weight:600;border-bottom:1px solid var(--line);padding:9px}.table td{border-bottom:1px solid #f0f3f5;padding:10px 9px}.badge{border-radius:99px;padding:3px 8px;font-size:12px}.ok{background:#e5fbf4;color:var(--green)}.slow{background:#fff3d9;color:var(--amber)}.bad{background:#ffe8ed;color:var(--red)}.right{border-left:1px solid var(--line);padding:68px 14px 20px;background:rgba(255,255,255,.45);position:relative}.right-card{padding:14px;margin-bottom:12px}.sync-list{display:grid;gap:8px}.check{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:8px;padding:9px;background:#fff}.check small{display:block;color:var(--muted);font-size:11px;margin-top:2px}.sync-btn{width:100%;height:42px;border:0;border-radius:8px;background:var(--teal);color:#fff;font-weight:900;margin-top:12px;cursor:pointer;transition:all .15s}.sync-btn:hover{background:#0eae87}.sync-btn:active{background:#0f9977;transform:translateY(1px)}.sync-btn:disabled{background:#93d8c8;cursor:not-allowed;transform:none}.steps{display:grid;gap:10px}.step{display:flex;align-items:center;gap:9px;font-size:13px;color:#65717d}.step:before{content:"";width:10px;height:10px;border-radius:99px;background:#d6dde2}.step.done:before{background:var(--green)}.step.active:before{background:var(--purple);box-shadow:0 0 0 4px rgba(124,58,237,.12)}.log{height:512px;background:#111827;color:#d1fae5;border-radius:8px;padding:10px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:auto}.modal{position:fixed;inset:0;background:rgba(15,23,42,.42);display:none;align-items:center;justify-content:center;padding:18px;z-index:50}.modal.open{display:flex}.modal-box{width:min(980px,100%);max-height:min(88vh,860px);background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 24px 70px rgba(15,23,42,.24);padding:16px;display:grid;gap:12px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.modal-head h2{margin:0;font-size:17px}.modal-close{width:34px;height:34px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;transition:all .15s}.modal-close:hover{background:#f7fbfb}.modal-close:active{background:#ecfbf7;transform:scale(.95)}.modal-copy{display:flex;gap:8px;flex-wrap:wrap}.code-area,.result-area{width:100%;border:1px solid var(--line);border-radius:8px;background:#0f172a;color:#d1fae5;padding:12px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}.code-area{height:260px}.result-area{height:128px;background:#fbfdfd;color:#334155}.modal-note{font-size:12px;color:var(--muted);line-height:1.6}.mobile-user-sheet{display:none}
+.remote-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.remote-tab{height:38px;border:1px solid var(--line);border-radius:8px;background:#fff;color:#41505c;font-weight:800;cursor:pointer}.remote-tab.active{background:var(--teal-weak);border-color:#bcebdd;color:var(--teal)}.remote-panel[hidden]{display:none}
 @media (max-width: 900px){.app{display:block}.side,.right{display:none}.main{padding:12px}.top{height:auto;position:sticky;top:0;z-index:5;background:rgba(248,251,251,.9);backdrop-filter:blur(12px);padding:8px 0}.mobile-menu{display:inline-grid;place-items:center;width:36px;height:36px;border:0;background:#fff;border-radius:8px;border:1px solid var(--line)}.top h1{font-size:18px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:12px}.form-grid{grid-template-columns:1fr}.url-row{grid-template-columns:1fr}.url-row .mini{width:74px}.section{padding:12px}.table,.table tbody,.table tr,.table td{display:block}.table thead{display:none}.table tr{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:#fff}.table td{border:0;padding:5px 10px}.table td:before{content:attr(data-label);display:block;font-size:11px;color:var(--muted)}.mobile-stack{display:grid;gap:12px}.user-menu{display:none}.mobile-user-sheet.open{display:block;position:fixed;left:0;right:0;bottom:0;background:#fff;border-radius:14px 14px 0 0;box-shadow:0 -16px 42px rgba(22,50,48,.18);padding:16px;z-index:20}.mobile-user-sheet .name{font-weight:900;margin-bottom:14px}.mobile-user-sheet button{width:100%;height:42px;border:0;border-radius:8px;background:#fff1f2;color:#d92d43;font-weight:800}}
 </style>
 </head>
@@ -2216,7 +3101,7 @@ APP_HTML = r"""<!doctype html>
     <div class="top">
       <div style="display:flex;align-items:center;gap:10px"><button class="mobile-menu">☰</button><div><h1 id="title">VPS 控制台</h1><div class="top-sub" id="subtitle">优选 IP 与订阅同步</div></div></div>
       <div class="actions"><button class="avatar" id="avatar">ZA</button></div>
-      <div class="user-menu" id="userMenu"><div class="name" id="userName">admin</div><button id="logoutBtn">退出登录</button></div>
+      <div class="user-menu" id="userMenu"><div class="name" id="userName">zane240314</div><button id="logoutBtn">退出登录</button></div>
     </div>
     <div class="cards">
       <div class="card"><div class="ico">IP</div><div><div class="label">当前 IP 数</div><div class="num" id="ipTotal">42</div></div></div>
@@ -2233,9 +3118,10 @@ APP_HTML = r"""<!doctype html>
         <label>续费周期<select id="editRenewalPeriod"><option value="monthly">月付</option><option value="yearly">年付</option></select></label>
         <label>带宽<input id="editBandwidth" placeholder="例如: 100Mbps"></label>
         <label>月流量<input id="editTraffic"></label>
-        <label>状态<select id="editStatus"><option>已同步</option><option>待刷新</option><option>异常</option></select></label>
+        <label>状态<select id="editStatus"><option>已同步</option><option>已回传</option><option>待刷新</option><option>异常</option></select></label>
         <label>优选管理页<input id="editAdmin"></label>
         <label>健康检查<input id="editHealth"></label>
+        <label>Webhook URL<input id="editWebhookUrl" placeholder="http://VPS_IP:18964/webhook"></label>
       </div>
     </section>
     <section class="section">
@@ -2280,43 +3166,60 @@ APP_HTML = r"""<!doctype html>
 <div class="modal" id="remoteCodeModal">
   <div class="modal-box">
     <div class="modal-head">
-      <div><h2>远端采集代码</h2><div class="modal-note">复制下面代码到新 VPS 执行，输出 JSON 后可粘贴到下方并填入当前 VPS。</div></div>
+      <div><h2 id="remoteToolTitle">远端采集代码</h2><div class="modal-note" id="remoteToolNote">复制下面代码到新 VPS 执行，输出 JSON 后可粘贴到下方并填入当前 VPS。</div></div>
       <button class="modal-close" id="closeRemoteCode">×</button>
     </div>
-    <textarea class="code-area" id="remoteCode" spellcheck="false" readonly></textarea>
-    <div class="modal-copy">
-      <button class="primary" id="copyRemoteCode">复制代码</button>
-      <button class="secondary" id="applyRemoteResult">将采集结果填入当前 VPS</button>
+    <div class="remote-tabs" role="tablist" aria-label="远端工具">
+      <button class="remote-tab active" type="button" data-remote-tool="collector">远端采集</button>
+      <button class="remote-tab" type="button" data-remote-tool="installer">3x-ui-zane 安装</button>
     </div>
-    <textarea class="result-area" id="remoteResult" spellcheck="false" placeholder="把新 VPS 执行后输出的 JSON 粘贴到这里"></textarea>
-    <div class="modal-note">采集脚本会避开常见 password/token/key 字段；但粘贴结果前仍建议扫一眼，别把长期密钥带回管理页。</div>
+    <section class="remote-panel" id="remoteCollectorPanel">
+      <textarea class="code-area" id="remoteCode" spellcheck="false" readonly></textarea>
+      <div class="modal-copy">
+        <button class="primary" id="copyRemoteCode">复制代码</button>
+        <button class="secondary" id="applyRemoteResult">将采集结果填入当前 VPS</button>
+      </div>
+      <textarea class="result-area" id="remoteResult" spellcheck="false" placeholder="把新 VPS 执行后输出的 JSON 粘贴到这里"></textarea>
+      <div class="modal-note">采集脚本会避开常见 password/token/key 字段；但粘贴结果前仍建议扫一眼，别把长期密钥带回管理页。</div>
+    </section>
+    <section class="remote-panel" id="remoteInstallerPanel" hidden>
+      <textarea class="code-area" id="installerCode" spellcheck="false" readonly>curl -fsSL https://789.240314.xyz/install.sh | bash</textarea>
+      <div class="modal-copy"><button class="primary" id="copyInstallerCode">复制安装命令</button></div>
+      <div class="modal-note">使用 root 用户在 Linux amd64 VPS 执行。脚本会检查系统和架构、补齐依赖、备份现有 3x-ui，并校验安装包。</div>
+    </section>
   </div>
 </div>
 <div class="ctx" id="vpsContext">
   <button id="ctxEdit">编辑信息</button>
   <button class="danger" id="ctxDelete">删除 VPS</button>
 </div>
-<div class="mobile-user-sheet" id="mobileUser"><div class="name" id="mobileUserName">admin</div><button id="mobileLogout">退出登录</button></div>
+<div class="mobile-user-sheet" id="mobileUser"><div class="name" id="mobileUserName">zane240314</div><button id="mobileLogout">退出登录</button></div>
 <script>
 let state=null, currentId=null, contextVpsId=null;
 const $=s=>document.querySelector(s);
-const statusDot=s=>s==="异常"?"err":(s==="待刷新"?"warn":"");
+const statusDot=v=>v.status==="异常"?"err":(v.last_sync_at&&v.last_sync_at>0?"":"warn");
 const money=v=>`${v.currency==="CNY"?"¥":"$"}${v.renewal_amount}/${v.renewal_period==="yearly"?"年":"月"}`;
 const lineCount=v=>(v||"").split("\n").map(x=>x.trim()).filter(Boolean).length;
+const shortTime=ts=>ts&&ts>0?new Date(ts*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).replace(/\//g,"-"):"未同步";
+function syncLabel(v){
+ if(!v.last_sync_at||v.last_sync_at<=0)return "未同步";
+ const prefix=(v.last_sync_status||"").includes("daily_0300")?"03:00回传":((v.last_sync_status||"").includes("manual_verify")?"手动回传":"最近同步");
+ return `${prefix} ${shortTime(v.last_sync_at)}`;
+}
 async function load(){state=await fetch("/api/state").then(r=>r.json()); normalizeCurrent(); $("#userName").textContent=state.username;$("#mobileUserName").textContent=state.username;render();}
 function normalizeCurrent(){if(!state.vps.length){currentId=null;return} if(!state.vps.some(v=>v.id===currentId)) currentId=state.vps[0].id;}
 function current(){normalizeCurrent(); return state.vps.find(v=>v.id===currentId)||state.vps[0]}
 function fillForm(c){
  $("#editName").value=c.name||""; $("#editExpires").value=c.expires_at||"";
  $("#editRenewal").value=c.renewal_amount||""; $("#editCurrency").value=c.currency||"USD"; $("#editRenewalPeriod").value=c.renewal_period||"monthly"; $("#editBandwidth").value=c.bandwidth||""; $("#editTraffic").value=c.monthly_traffic||"";
- $("#editStatus").value=c.status||"待刷新"; $("#editAdmin").value=c.admin_url||""; $("#editHealth").value=c.health_url||"";
+ $("#editStatus").value=c.status||"待刷新"; $("#editAdmin").value=c.admin_url||""; $("#editHealth").value=c.health_url||""; $("#editWebhookUrl").value=c.sync_webhook_url||"";
  $("#xuiUrl").value=c.xui_sub_url||""; $("#comboUrl").value=c.combo_sub_url||""; $("#cdnUrl").value=c.cdn_sub_url||""; $("#sources").value=c.preferred_sources||"";
 }
 function collectForm(){
  const c={...current()};
  c.name=$("#editName").value; c.expires_at=$("#editExpires").value; c.renewal_amount=$("#editRenewal").value;
  c.currency=$("#editCurrency").value; c.renewal_period=$("#editRenewalPeriod").value; c.bandwidth=$("#editBandwidth").value; c.monthly_traffic=$("#editTraffic").value; c.status=$("#editStatus").value; c.admin_url=$("#editAdmin").value;
- c.health_url=$("#editHealth").value;
+ c.health_url=$("#editHealth").value; c.sync_webhook_url=$("#editWebhookUrl").value;
  c.xui_sub_url=$("#xuiUrl").value; c.combo_sub_url=$("#comboUrl").value; c.cdn_sub_url=$("#cdnUrl").value; c.preferred_sources=$("#sources").value;
  return c;
 }
@@ -2358,7 +3261,7 @@ function render(){
  $("#roleTags").innerHTML=(c.role||"").split("·").filter(Boolean).map(x=>`<span class="chip">${x.trim()}</span>`).join("");
  fillForm(c);
  updateAllSubstoreUrls();
- $("#vpsList").innerHTML=state.vps.map(v=>`<div class="vps-row ${v.id===currentId?"active":""}" data-id="${v.id}"><div class="vps-title"><span>${v.name}</span><small><i class="dot ${statusDot(v.status)}"></i>${v.status}</small></div><div class="meta">到期 ${v.expires_at||"-"} · 续费 ${money(v)} · ${v.monthly_traffic||"-"}</div></div>`).join("");
+ $("#vpsList").innerHTML=state.vps.map(v=>`<div class="vps-row ${v.id===currentId?"active":""}" data-id="${v.id}"><div class="vps-title"><span>${v.name}</span><small><i class="dot ${statusDot(v)}"></i>${syncLabel(v)}</small></div><div class="meta">到期 ${v.expires_at||"-"} · 续费 ${money(v)} · ${v.monthly_traffic||"-"}</div></div>`).join("");
  document.querySelectorAll(".vps-row").forEach(el=>{
   el.onclick=()=>{hideContext(); currentId=Number(el.dataset.id); render();};
   el.oncontextmenu=e=>{
@@ -2373,7 +3276,7 @@ function render(){
  const ok=checks.filter(x=>x.status==="可用"||x.status==="慢").length;
 
  // 更新卡片数据
- $("#ipTotal").textContent=checks.length||lineCount(c.preferred_sources);
+ $("#ipTotal").textContent=checks.length||"-";
  $("#ipOk").textContent=ok;
 
  // 显示上次同步时间
@@ -2456,10 +3359,20 @@ function applyCollectedData(data){
   console.log("✓ 远端数据已填充到表单");
   alert("远端数据已填充完成！\n\n请检查表单内容，确认无误后点击「保存信息」。"+(data.detected_urls?"\n\n检测到 "+data.detected_urls.length+" 个 URL，已自动匹配订阅地址。":""));
 }
-$("#remoteCodeBtn").onclick=async()=>{$("#remoteCodeModal").classList.add("open"); if(!$("#remoteCode").value)$("#remoteCode").value=await fetch("/api/remote-code").then(r=>r.text());};
+async function setRemoteTool(tool){
+ const isCollector=tool==="collector";
+ $("#remoteCollectorPanel").hidden=!isCollector; $("#remoteInstallerPanel").hidden=isCollector;
+ $("#remoteToolTitle").textContent=isCollector?"远端采集代码":"3x-ui-zane 一键安装";
+ $("#remoteToolNote").textContent=isCollector?"复制下面代码到新 VPS 执行，输出 JSON 后可粘贴到下方并填入当前 VPS。":"复制命令到其他 VPS 直接执行，无需记忆安装地址。";
+ document.querySelectorAll("[data-remote-tool]").forEach(button=>button.classList.toggle("active",button.dataset.remoteTool===tool));
+ if(isCollector&&!$("#remoteCode").value)$("#remoteCode").value=await fetch("/api/remote-code").then(r=>r.text());
+}
+$("#remoteCodeBtn").onclick=async()=>{$("#remoteCodeModal").classList.add("open"); await setRemoteTool("collector");};
+document.querySelectorAll("[data-remote-tool]").forEach(button=>button.onclick=()=>setRemoteTool(button.dataset.remoteTool));
 $("#closeRemoteCode").onclick=()=>$("#remoteCodeModal").classList.remove("open");
 $("#remoteCodeModal").onclick=e=>{if(e.target.id==="remoteCodeModal")$("#remoteCodeModal").classList.remove("open")};
 $("#copyRemoteCode").onclick=()=>navigator.clipboard.writeText($("#remoteCode").value||"");
+$("#copyInstallerCode").onclick=()=>navigator.clipboard.writeText($("#installerCode").value);
 $("#applyRemoteResult").onclick=()=>{try{applyCollectedData(JSON.parse($("#remoteResult").value)); $("#remoteCodeModal").classList.remove("open");}catch(e){console.error("JSON解析失败:",e);alert("JSON 解析失败: "+e.message+"\n\n请检查是否完整复制了脚本输出的 JSON。");}};
 $("#dedupeBtn").onclick=()=>{const before=$("#sources").value.split("\n").filter(Boolean).length;$("#sources").value=[...new Set($("#sources").value.split("\n").map(x=>x.trim()).filter(Boolean))].join("\n");const after=$("#sources").value.split("\n").filter(Boolean).length;if(before>after)alert(`✓ 去重完成\n\n删除了 ${before-after} 个重复项`);else alert("✓ 无重复项");};
 $("#validateBtn").onclick=async()=>{try{btnLoading($("#validateBtn"),"检测中...");const c=await saveCurrent();await fetch("/api/check-ips",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({vps_id:c.id})});await load();alert("✓ IP 检测已完成\n\n请查看下方「源内 IP 明细检测」表格");btnReset($("#validateBtn"));}catch(e){alert("✗ 检测失败: "+e.message);btnReset($("#validateBtn"));}};

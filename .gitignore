@@ -1,8 +1,9 @@
-.env
-data/
-*.db
-*.sqlite
-*.tar.gz
 __pycache__/
 *.pyc
+.superpowers/
+work/
+anyvps/
+skill-build/
+skills/
+anyvps-session-export.tar.gz
 .DS_Store
