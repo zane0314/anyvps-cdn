@@ -217,6 +217,11 @@ select.input{padding:0 6px}
 .step .s{font-size:10.5px;color:var(--faint)}
 .step.done::before{background:var(--green)}
 .step.done .t{color:var(--text);font-weight:600}
+.step.fail::before{background:var(--red)}
+.step.fail .t{color:var(--red);font-weight:600}
+.step.pending::before{background:var(--amber,#e2a13c);animation:stepPulse 1.6s ease-in-out infinite}
+.step.pending .t{color:var(--text);font-weight:600}
+@keyframes stepPulse{0%,100%{opacity:1}50%{opacity:.35}}
 .log{
   flex:1;overflow-y:auto;background:#f9fafb;border:1px solid var(--line-soft);border-radius:7px;
   padding:8px;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:10.5px;

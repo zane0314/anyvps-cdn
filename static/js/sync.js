@@ -2,19 +2,33 @@
 import { $, esc, fullTime } from "./util.js";
 import { lineCount } from "./sidebar.js";
 
-// ---- 同步链路（竖向步骤条，由 last_sync_status 文本驱动，与旧前端一致）----
+// ---- 同步链路（竖向步骤条）----
+// 通过哪一步哪一步亮绿灯；任一步失败亮红灯并阻断后续；Agent 待执行亮黄灯。
 const STEP_NAMES = ["管理页已同步", "远端已执行", "订阅已刷新", "Sub-Store已验证"];
 
 export function renderSyncSteps(status) {
-  const done = [false, false, false, false];
-  if (status) {
-    if (status.includes("管理页已同步")) done[0] = true;
-    if (status.includes("远端已执行") || status.includes("远端执行器响应")) done[1] = true;
-    if (status.includes("订阅已刷新")) done[2] = true;
-    if (status.includes("Sub-Store已验证")) done[3] = true;
+  const text = status || "";
+  const failed = /失败|failed|异常|HTTP [45]\d\d|exit [1-9]|超时|timeout/i.test(text);
+  const pending = text.includes("等待执行");
+  const ok = [
+    Boolean(text), // 1. 管理页已同步：有任何同步记录
+    /webhook HTTP [23]\d\d|command exit 0|Agent done|已回传|CDN已更新|CDN未探测到/.test(text), // 2. 远端已执行
+    /刷新 exit 0|CDN已更新|验证 HTTP [23]\d\d/.test(text), // 3. 订阅已刷新
+    /验证 HTTP [23]\d\d|Sub-Store已验证/.test(text), // 4. Sub-Store已验证
+  ];
+  // 递进亮灯：前一步未过则后续一律不亮
+  const state = [];
+  let blocked = false;
+  for (let i = 0; i < 4; i++) {
+    if (blocked) { state.push(""); continue; }
+    if (ok[i]) { state.push("done"); continue; }
+    if (failed && i > 0 && ok[i - 1]) state.push("fail");
+    else if (pending && i === 1) state.push("pending");
+    else state.push("");
+    blocked = true;
   }
   $("#syncSteps").innerHTML = STEP_NAMES.map((name, i) =>
-    `<div class="step ${done[i] ? "done" : ""}"><div><div class="t">${esc(name)}</div></div></div>`
+    `<div class="step ${state[i]}"><div><div class="t">${esc(name)}</div></div></div>`
   ).join("");
 }
 
