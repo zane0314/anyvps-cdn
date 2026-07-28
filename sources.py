@@ -54,7 +54,7 @@ def upsert_inventory_rows(rows: list[dict]) -> int:
                         xui_sub_url like '%example.com%'
                         or combo_sub_url like '%example.com%'
                         or cdn_sub_url like '%example.com%'
-                        or name in ('洛杉矶 主控','云途 A','云途 B','圣何塞 CN2','凯撒斯')
+                        or name in ('主控 VPS','边缘 VPS A','边缘 VPS B','备用 VPS','代理 VPS')
                       )
                     """
                 )

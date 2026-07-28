@@ -2,7 +2,7 @@
 # AnyVPS 一键部署脚本
 set -e
 
-MANAGER_URL="${MANAGER_URL:-https://anyvps.240314.xyz}"
+MANAGER_URL="${MANAGER_URL:-__MANAGER_URL__}"
 AGENT_PATH="/usr/local/bin/anyvps-agent"
 SERVICE_PATH="/etc/systemd/system/anyvps-agent.service"
 ANYVPS_SOURCE_FILE="${ANYVPS_SOURCE_FILE:-}"

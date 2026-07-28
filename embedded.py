@@ -7,6 +7,8 @@ helpers shared by the collector and agent scripts. Editing it updates
 
 from pathlib import Path
 
+from config import PUBLIC_URL
+
 SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
 
 ROBOTS_TXT = """User-agent: *
@@ -15,7 +17,7 @@ Disallow: /
 X-Robots-Tag: noindex, nofollow, noarchive
 """
 
-REMOTE_COLLECTOR_SCRIPT = r"""curl -fsSL https://anyvps.240314.xyz/install.sh | bash"""
+REMOTE_COLLECTOR_SCRIPT = f"curl -fsSL {PUBLIC_URL}/install.sh | bash"
 
 
 def _read(name: str) -> str:
@@ -30,6 +32,7 @@ def _build_install_script() -> str:
         _read("install.sh.tpl")
         .replace("__COLLECTOR_PY__", collector)
         .replace("__AGENT_PY__", agent)
+        .replace("__MANAGER_URL__", PUBLIC_URL)
     )
 
 

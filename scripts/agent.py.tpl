@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-MANAGER_URL = os.getenv("ANYVPS_MANAGER_URL", "https://anyvps.240314.xyz")
+MANAGER_URL = os.getenv("ANYVPS_MANAGER_URL", "__MANAGER_URL__")
 VPS_ID = os.getenv("ANYVPS_VPS_ID", "")
 AGENT_TOKEN = os.getenv("ANYVPS_AGENT_TOKEN", "")
 LOCAL_SOURCE_FILE = os.getenv("ANYVPS_SOURCE_FILE", "")

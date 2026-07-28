@@ -6,7 +6,7 @@ import app
 
 class SubStoreRefreshTest(unittest.TestCase):
     def test_no_cache_and_real_substore_url(self):
-        url = app.add_no_cache_param("https://example.test/download/bitsflow-%E4%B8%9C%E4%BA%AC-cdn?target=Clash")
+        url = app.add_no_cache_param("https://example.test/download/example-%E4%B8%9C%E4%BA%AC-cdn?target=Clash")
         self.assertEqual(parse_qs(urlparse(url).query), {"target": ["Clash"], "noCache": ["true"]})
         row = {
             "substore_base64_url": "https://substore.test/download/item",

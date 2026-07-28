@@ -6,6 +6,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+from config import PUBLIC_URL
 from db import get_conn
 from security import now_ts
 from sources import clean_text, read_url
@@ -77,9 +78,9 @@ def upload_to_substore(vps_id: int, vps_name: str, source_type: str, source_url:
     # SubStore 配置（从环境变量读取）
     SUBSTORE_API = os.getenv("SUBSTORE_API", "http://localhost:3001")
     SUBSTORE_TOKEN = os.getenv("SUBSTORE_TOKEN", "")
-    SUBSTORE_BASE_URL = os.getenv("SUBSTORE_BASE_URL", "https://anyvps.240314.xyz/substore")
+    SUBSTORE_BASE_URL = os.getenv("SUBSTORE_BASE_URL", f"{PUBLIC_URL}/substore")
 
-    # 生成订阅项名称：vps名称-类型 (如: yunyo-cdn)
+    # 生成订阅项名称：vps名称-类型 (如: example-cdn)
     item_name = f"{vps_name.lower().replace(' ', '-')}-{source_type}"
 
     try:

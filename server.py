@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from config import HOST, PASSWORD, PORT
+from config import HOST, PASSWORD, PORT, PUBLIC_URL
 from db import get_conn, init_db
 from embedded import INSTALL_SCRIPT, REMOTE_COLLECTOR_SCRIPT, ROBOTS_TXT, WEBHOOK_RECEIVER_SCRIPT
 from security import (
@@ -87,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
 # AnyVPS Webhook 接收器部署脚本
 set -e
 echo "==> 部署 AnyVPS Webhook 接收器..."
-curl -fsSL -o /usr/local/bin/anyvps-webhook-receiver.py https://anyvps.240314.xyz/vps-webhook-receiver.py
+curl -fsSL -o /usr/local/bin/anyvps-webhook-receiver.py __PUBLIC_URL__/vps-webhook-receiver.py
 chmod +x /usr/local/bin/anyvps-webhook-receiver.py
 cat > /etc/systemd/system/anyvps-webhook.service <<'EOF'
 [Unit]
@@ -114,7 +114,7 @@ else
     echo "✗ 服务启动失败"
     exit 1
 fi
-"""
+""".replace("__PUBLIC_URL__", PUBLIC_URL)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             payload = install_webhook_script.encode()

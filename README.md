@@ -1,37 +1,46 @@
 # AnyVPS
 
-Personal VPS preferred-IP and subscription management panel.
+A small, dependency-free control panel for VPS inventory, preferred-IP
+sources, subscription links, Sub-Store exports, and Agent-based synchronization.
+
+This public repository is a sanitized distribution generated from a private
+production source repository. It contains no production credentials or
+deployment-specific data.
 
 ## Architecture
 
-- **Backend**: Python stdlib only (no web framework), modular:
-  `app.py` (entry) + `config / db / security / sources / substore / sync / state / server`
-- **Frontend**: `static/` — zero-dependency ES-module SPA (Linear light UI), no build step
-- **Embedded scripts**: `scripts/detect_common.py` is the single source of truth
-  for the `detect_*` helpers; `embedded.py` assembles `/install.sh`
-  (collector + agent) from `scripts/*.tpl` in memory at startup
+- Python standard-library backend.
+- SQLite data store.
+- Native ES-module frontend with no build step.
+- Docker Compose deployment bound to `127.0.0.1:8090`.
 
-## Local run
+## Configure
 
 ```bash
 cp .env.example .env
-python app.py
 ```
 
-## Docker
+Set a strong password and session secret, then replace
+`https://anyvps.example.com` with the public HTTPS URL of your deployment.
+
+## Run
 
 ```bash
 docker compose up -d --build
 ```
 
-The app listens on `127.0.0.1:8090` when deployed with Docker Compose.
-
-## Tests
+## Test
 
 ```bash
-python3 test_substore_refresh.py
+python3 -m unittest discover -v
 ```
 
-## Changelog
+## Install an Agent
 
-See [CHANGELOG.md](CHANGELOG.md)（中文更新日志）.
+After deploying the panel, run the permanent installer URL from a new VPS:
+
+```bash
+curl -fsSL https://anyvps.example.com/install.sh | bash
+```
+
+The deployment URL is controlled by `ANYVPS_PUBLIC_URL`.

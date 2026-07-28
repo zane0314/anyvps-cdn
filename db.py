@@ -184,7 +184,7 @@ def init_db() -> None:
 def seed_vps(conn: sqlite3.Connection) -> None:
     rows = [
         (
-            "洛杉矶 主控",
+            "主控 VPS",
             "Sub-Store · nginx · x-ui · CDN 优选",
             "2026-12-18",
             "8",
@@ -196,10 +196,10 @@ def seed_vps(conn: sqlite3.Connection) -> None:
             "https://la-cdn.example.com/sub...?refresh=1",
             "https://example.com/bestcf.txt\nhttps://ip-source.example.net/cf.list\nhttps://raw.example.org/cloudflare-speed.txt",
         ),
-        ("云途 A", "3x-ui · CDN 优选", "2026-10-02", "42", "CNY", "1TB", "待刷新", "", "", "", ""),
-        ("云途 B", "3x-ui · Docker", "2026-11-15", "48", "CNY", "2TB", "已同步", "", "", "", ""),
-        ("圣何塞 CN2", "备用 · 低延迟", "2026-09-01", "6", "USD", "500GB", "待刷新", "", "", "", ""),
-        ("凯撒斯", "代理 · 备用", "2026-08-20", "5", "USD", "1TB", "异常", "", "", "", ""),
+        ("边缘 VPS A", "3x-ui · CDN 优选", "2026-10-02", "42", "CNY", "1TB", "待刷新", "", "", "", ""),
+        ("边缘 VPS B", "3x-ui · Docker", "2026-11-15", "48", "CNY", "2TB", "已同步", "", "", "", ""),
+        ("备用 VPS", "备用 · 低延迟", "2026-09-01", "6", "USD", "500GB", "待刷新", "", "", "", ""),
+        ("代理 VPS", "代理 · 备用", "2026-08-20", "5", "USD", "1TB", "异常", "", "", "", ""),
     ]
     conn.executemany(
         """

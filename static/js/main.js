@@ -293,7 +293,7 @@ async function setRemoteTool(tool) {
   const isCollector = tool === "collector";
   $("#remoteCollectorPanel").hidden = !isCollector;
   $("#remoteInstallerPanel").hidden = isCollector;
-  $("#remoteToolTitle").textContent = isCollector ? "远端采集" : "3x-ui-zane 一键安装";
+  $("#remoteToolTitle").textContent = isCollector ? "远端采集" : "3x-ui 一键安装";
   $("#remoteToolNote").textContent = isCollector
     ? "复制下面代码到新 VPS 执行，输出 JSON 后可粘贴到下方导入。"
     : "复制命令到其他 VPS 直接执行，无需记忆安装地址。";

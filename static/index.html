@@ -137,7 +137,7 @@
     </div>
     <div class="tabs" role="tablist" aria-label="远端工具">
       <button class="tab active" type="button" data-remote-tool="collector">远端采集</button>
-      <button class="tab" type="button" data-remote-tool="installer">3x-ui-zane 安装</button>
+      <button class="tab" type="button" data-remote-tool="installer">3x-ui 安装</button>
     </div>
     <section id="remoteCollectorPanel">
       <textarea class="input code-area mono" id="remoteCode" spellcheck="false" readonly></textarea>
@@ -150,7 +150,7 @@
       <div class="modal-note">采集脚本会避开常见 password/token/key 字段；但粘贴结果前仍建议扫一眼，别把长期密钥带回管理页。</div>
     </section>
     <section id="remoteInstallerPanel" hidden>
-      <textarea class="input code-area mono" id="installerCode" spellcheck="false" readonly>curl -fsSL https://789.240314.xyz/install.sh | bash</textarea>
+      <textarea class="input code-area mono" id="installerCode" spellcheck="false" readonly>curl -fsSL https://installer.example.com/install.sh | bash</textarea>
       <div class="modal-actions"><button class="btn primary" id="copyInstallerCode">复制安装命令</button></div>
       <div class="modal-note">使用 root 用户在 Linux amd64 VPS 执行。脚本会检查系统和架构、补齐依赖、备份现有 3x-ui，并校验安装包。</div>
     </section>
